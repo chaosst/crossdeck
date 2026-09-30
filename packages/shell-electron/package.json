@@ -1,0 +1,14 @@
+{
+  "name": "@crossdeck/shell-electron",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron shell — main (core host + system capabilities) / preload (minimal bridge) / renderer (React 19 UI)",
+  "dependencies": {
+    "@crossdeck/contract": "workspace:*",
+    "@crossdeck/core": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  }
+}

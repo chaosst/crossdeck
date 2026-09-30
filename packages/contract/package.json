@@ -1,0 +1,14 @@
+{
+  "name": "@crossdeck/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared type contracts — the single source of truth for main / preload / renderer",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  }
+}

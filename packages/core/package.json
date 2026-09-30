@@ -1,0 +1,17 @@
+{
+  "name": "@crossdeck/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Platform-agnostic agent kernel — ZERO platform APIs (no electron / node:* / @ohos.*)",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@crossdeck/contract": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  }
+}
