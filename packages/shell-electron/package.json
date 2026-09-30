@@ -4,11 +4,31 @@
   "private": true,
   "type": "module",
   "description": "Electron shell — main (core host + system capabilities) / preload (minimal bridge) / renderer (React 19 UI)",
+  "main": "dist/main/index.cjs",
   "dependencies": {
     "@crossdeck/contract": "workspace:*",
-    "@crossdeck/core": "workspace:*"
+    "@crossdeck/core": "workspace:*",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "scripts": {
+    "setup:electron": "node scripts/setup-electron.mjs",
+    "build": "node scripts/build.mjs",
+    "build:main": "node scripts/build.mjs --main-only",
+    "start": "node scripts/build.mjs && node scripts/launch.mjs",
+    "dev": "node scripts/build.mjs --main-only && node scripts/launch.mjs --dev",
+    "selfcheck": "node scripts/build.mjs && node scripts/launch.mjs --selfcheck",
     "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.4.5",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.1"
   }
 }

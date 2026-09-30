@@ -1,2 +1,21 @@
 packages:
   - 'packages/*'
+
+# 依赖安装脚本白名单。
+#
+# 两条实测结论支撑"全部不放行"：
+#   1. **electron 44 起不再有 postinstall**（package.json 里已无 scripts 字段）。
+#      二进制改成显式拉取，pnpm 的构建白名单对它毫无作用：
+#      见 `pnpm setup:electron`。
+#   2. **esbuild 的 postinstall 只做二进制版本校验**，
+#      真正的平台二进制由 optionalDependencies（@esbuild/win32-x64）提供。
+#      不放行它，esbuild 的 build / transform 依然可用 —— 已实测验证。
+#
+# 注意必须写成 false，不能省略：
+#   pnpm 11 会把"未表态"的条目重写成占位符
+#   （`esbuild: set this to true or false`），并把存在被忽略的构建脚本当作错误退出。
+#   显式 false = 我已决策不放行，pnpm 才停止报错。
+#
+# 副作用是供应链攻击面更小：装的依赖里没有任何一个会在安装时执行脚本。
+allowBuilds:
+  esbuild: false

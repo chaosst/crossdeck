@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>crossdeck</title>
+    <!--
+      这里刻意**不写** <meta http-equiv="Content-Security-Policy">：
+      CSP 由 main 进程按模式下发（生产走 app:// 协议的响应头，开发走 webRequest）。
+      写死在这里会导致两套 CSP 同时生效并按最严格者执行，
+      开发时想放宽就得改 HTML —— 那才是真正容易出安全事故的做法。
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

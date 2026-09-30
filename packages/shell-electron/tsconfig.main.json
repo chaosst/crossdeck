@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/types-main",
+    "lib": ["ES2022"],
+    // 只放行 node 的全局类型：主进程侧**不得**出现 document / window 这类 DOM 全局。
+    // @types/react 等前端类型不会进入这个项目。
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/preload"],
+  "references": [{ "path": "../contract" }, { "path": "../core" }]
+}

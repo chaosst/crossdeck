@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+/* 显式声明扫描范围：Vite root 是 src/renderer，
+   但把 @source 写出来可以避免"改完 class 没生效"这类排查成本。 */
+@source './**/*.{tsx,ts,html}';
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'Noto Sans SC',
+    'Microsoft YaHei',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 桌面端不该能整页选中文字 —— 只有内容区可选中 */
+body {
+  user-select: none;
+}
+pre,
+input,
+textarea {
+  user-select: text;
+}

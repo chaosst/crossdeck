@@ -1,0 +1,22 @@
+{
+  "updatedAt": "2026-09-30T19:06:17.764Z",
+  "mode": "prod",
+  "ok": true,
+  "electron": "44.4.5",
+  "chrome": "152.0.7977.130",
+  "node": "24.21.0",
+  "registeredChannelCount": 10,
+  "assertionSummary": {
+    "bridgeMounted": true,
+    "systemInfoOk": true,
+    "errorCodePreservedAs": "NOT_FOUND",
+    "streamEvents": 31,
+    "streamEndedWithDone": true,
+    "streamUnsubscribeWorks": true,
+    "unknownChannelRejected": true,
+    "consoleErrors": 0
+  },
+  "failures": [],
+  "reportFile": "docs/evidence/selfcheck-prod.json",
+  "screenshotFile": "docs/evidence/window-prod.png"
+}

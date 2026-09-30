@@ -9,9 +9,16 @@
     "node": ">=20"
   },
   "scripts": {
+    "setup:electron": "pnpm --filter @crossdeck/shell-electron setup:electron",
+    "build": "pnpm --filter @crossdeck/shell-electron build",
+    "dev": "pnpm --filter @crossdeck/shell-electron dev",
+    "start": "pnpm --filter @crossdeck/shell-electron start",
+    "selfcheck": "pnpm --filter @crossdeck/shell-electron selfcheck && node scripts/archive-selfcheck.mjs",
     "typecheck": "tsc -b",
     "typecheck:clean": "tsc -b --clean",
-    "verify:ipc": "node scripts/verify-type-alignment.mjs"
+    "verify:ipc": "node scripts/verify-type-alignment.mjs",
+    "verify:core-purity": "node scripts/verify-core-purity.mjs",
+    "verify": "pnpm typecheck && pnpm verify:core-purity && pnpm verify:ipc"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

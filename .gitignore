@@ -13,3 +13,7 @@ coverage/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Chromium / Electron 会在工作目录留下形如 _tmp_<pid>_<hash> 的空临时文件
+# （实测：每次启动都会新增几个，0 字节）。它们不是源码，不该进版本库。
+_tmp_*

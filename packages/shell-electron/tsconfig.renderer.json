@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/types-renderer",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    // types 置空：渲染层**不得**拿到任何 node 全局类型。
+    // 想在这里 import 'node:fs' 或写 process.env 会直接编译报错 ——
+    // 这和"渲染进程 nodeIntegration: false"是同一条边界的两种表述。
+    "types": []
+  },
+  "include": ["src/renderer"],
+  "references": [{ "path": "../contract" }]
+}
