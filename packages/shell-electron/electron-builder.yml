@@ -5,7 +5,13 @@
 #   1. **不带 node_modules**。main / preload 由 esbuild 打成单文件，
 #      `external` 只有 electron 与 vite（vite 还只在 --dev 下动态 import 到）。
 #      contract / core 是 TS 源码包，靠打包内联 —— 所以运行期一个外部模块都不需要。
-#      产物因此只有几MB，安装包体积能压住（计划里的验收是 < 90MB）。
+#      产物因此只有几MB，安装包体积能压住。
+#
+# 体积实测（改写过一次口径，别照抄旧数字）：
+#   未压缩产物 369MB → 裁 locale 后 322MB；安装包 106.38MB → **98.10MB**。
+#   其中 app.asar（我们自己写的全部代码）**只有 964KB**。
+#   口径已由计划里的 `< 90MB` 修订为 `< 100MB`，理由与逐个文件的数字见
+#   docs/plans/2026-10-04-m4-m6-开发计划.md 的 §2.3 M5-1。
 #
 #   2. **asar 开着**。渲染层走 app:// 协议 + net.fetch(file://)，
 #      Electron 的 file 协议能透明读 asar，不需要解包。

@@ -51,9 +51,11 @@ pnpm setup:electron
 
 pnpm dev          # 开发：内嵌 Vite（HMR）+ Electron，只有一个进程
 pnpm start        # 生产：跑 dist/ 里的真实产物
-pnpm verify       # 全量校验：类型检查 + core 纯度 + IPC 负例 + scope/agent 单测
+pnpm verify       # 全量校验：类型检查 + core 纯度 + IPC 负例 + scope/agent/update 单测
 pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 pnpm selfcheck:web  # Web 壳（试金石）端到端自检：真开一个 Chromium 跑同一份 core
+pnpm pack:win     # 打 Windows NSIS 安装包（约 98MB，见「已知限制」）
+pnpm verify:update-feed  # 用本地真实 feed 在打包产物上跑通更新链路（须先 pack:win）
 ```
 
 ### 各命令实际做了什么
@@ -63,9 +65,11 @@ pnpm selfcheck:web  # Web 壳（试金石）端到端自检：真开一个 Chrom
 | `pnpm dev` | esbuild 打 main/preload → Electron 主进程**内嵌启动 Vite** → 加载 dev server |
 | `pnpm start` | 全量构建（含 renderer）→ 通过自称协议 `app://` 加载产物 |
 | `pnpm dev:web` | 单独的 Vite dev server（:5199）—— core 在浏览器里跑，不需要 Electron |
-| `pnpm verify` | `tsc -b` → core 铁律扫描 → 11 个类型负例 → 72 条 scope 断言 → 83 条 agent 断言 |
+| `pnpm verify` | `tsc -b` → core 铁律扫描 → 13 个类型负例 → 72 条 scope / 83 条 agent / 72 条 update 断言 |
 | `pnpm selfcheck` | 启动应用 → 真实上下文探针 → 截图 → 写报告 → 归档到 `docs/evidence/` |
 | `pnpm selfcheck:web` | Vite 构建 → 起静态服务 → 无头 Chromium 走 CDP → 页面内跑 59 条断言 → 截图归档 |
+| `pnpm pack:win` | electron-builder → NSIS 安装包 + `latest.yml`；**不含 node_modules**，`app.asar` 0.96MB |
+| `pnpm verify:update-feed` | 起本地静态 feed → 打包产物以 `CROSSDECK_UPDATE_URL` 指过去 → 跑完检查/下载/就绪 → 按哨兵判定 |
 
 > **受限环境下跑自检**：若本机 Chromium 沙箱起不来 viz 层（表现为
 > `GPU process isn't usable. Goodbye.`，退出码 3），可以显式降级：
@@ -76,7 +80,7 @@ pnpm selfcheck:web  # Web 壳（试金石）端到端自检：真开一个 Chrom
 
 ## 验证：凭什么说它是成立的
 
-### 1. 类型安全 IPC 与跨环境边界（`pnpm verify:ipc`，11/11 通过）
+### 1. 类型安全 IPC 与跨环境边界（`pnpm verify:ipc`，13/13 通过）
 
 只跑正例是不够的 —— 一个把类型写成 `any` 的项目同样能通过正例。
 所以要证明**写错会被挡住**：
@@ -232,6 +236,45 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 | `resolveInWorkspace` 不带 `withinWorkspaceId` | `scope.prefixTrapDenied` + `scope.crossWorkspaceDeniedBothWays` |
 | UI 只显示原因、隐去错误码 | `ui.escapeDenialVisible` |
 | `AgentRuntime.pause` 变成空操作 | `backpressure.pauseFreezesStream` |
+
+### 7. 自动更新链路（`pnpm verify:update-feed`，须先 `pnpm pack:win`）
+
+自动更新是**两半**，只验一半等于没验：
+
+| | 跑在哪 | 验证的是 |
+|---|---|---|
+| `pnpm selfcheck` | 未打包形态 | **不具备条件时会不会如实说** —— 界面停在 `error`（`retryable=false`）而不是转圈到天荒地老，拒绝码 `UNSUPPORTED:NOT_PACKAGED`，退订后事件数不再增长 |
+| `pnpm verify:update-feed` | **打包产物** | **真的有新版本时能不能检出、能不能下载** |
+
+后者的做法：本地起一个静态 feed（`latest.yml` + 8MB 假安装包，支持 Range），
+用 `CROSSDECK_UPDATE_URL` 把产物指过去，跑完再按哨兵判定 —— 校验链挂在
+「断言过没过」，不挂在「进程能不能退出」（受限会话里 Electron 退不干净，
+这条经验在自检里已经吃过一次）。
+
+打包产物的实测轨迹（**渲染层收到的全量推送**，`packaged=true`）：
+
+```
+checking → available(9.9.9) → downloading(0%) → downloading(100%) → ready(9.9.9)
+```
+
+服务端确实收到了 `GET /latest.yml`、blockmap、安装包 —— 真走了一趟 HTTP，
+不是把 feed 层换成假对象自欺。
+
+两个设计点值得说：
+
+1. **状态收集放在渲染层订阅推送通道，不在主进程轮询。**
+   第一版用 50ms 轮询，本机回环上整个 check 只花几毫秒，`checking` 与 `available`
+   两帧**完整落在同一个采样间隔里**，于是断言报"没出现 checking" ——
+   而主进程日志里那两行写得清清楚楚。**采样永远会漏，拿它断言事件序列必然出假阴性**，
+   而假阴性比没有断言更糟：它把一条好链路报成坏的。改成正路后顺带证明了
+   另一件事 —— 推送真的走到了渲染层（主进程状态对不对，和界面收没收到，是两回事）。
+2. **断言"三处一致"**：主进程状态机 / 渲染层收到的最后一帧 / DOM 上的 `data-stage`。
+   只对其中两处，「状态对了但界面没刷新」这种故障就没人看得见。
+
+为什么"永远转圈"能被结构性挡住：`UpdateStatus` 写成**判别联合**
+（`idle | checking | available | downloading | ready | error`）而不是
+`{stage; info?; percent?; message?}` 那种松形状 —— 松形状下
+「只有 stage、什么都不填」在类型上完全合法，而它渲染出来的正是那个转圈的按钮。
 
 ---
 
@@ -538,8 +581,72 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
 - [x] **M4.5(c)** — ESLint `no-restricted-syntax` 把铁律提到编辑器即时反馈
       （`noInlineConfig` 让 disable 注释失效；17 个负例 + 5 个必须沉默的正例）
 - [ ] **M1** — 从 navigate 抽取更多 core 模块（真实 LLM 适配层）
-- [ ] **M5** — 自动更新 + 三平台打包 + 性能量化（冷启动 / 内存基线）
+- [x] **M5(a)** — 打包分发 + 自动更新链路：NSIS 安装包 + `latest.yml`；
+      更新契约（判别联合状态机）；`--update-feed-probe` 在**打包产物**上
+      对着真实静态 feed 跑完 `checking → available → downloading → ready`
+- [ ] **M5(b)** — mac / linux 产物（尽力）——计划里排在取舍顺序最后
+- [ ] **M5(c)** — 性能量化（`perf:sample`：冷启动 / 内存 / 首 token / 流式帧率）
 - [ ] **M6** — HarmonyOS 壳（ArkTS + 2in1 鸿蒙 PC 形态）
+
+---
+
+## 已知限制
+
+这一节存在的理由：一份只讲做成了什么的工程文档，读起来必然可疑。
+下面每一条都是**当前产物**的真实状态，不是"以后会做"的清单。
+
+### 1. 安装包没有代码签名
+
+`pnpm pack:win` 产出的是**未签名**包。后果是具体的：Windows SmartScreen 会弹
+「未知发布者」，用户得点两次「仍要运行」；系统层面无法验证发布者身份，
+也就没有真正的静默升级体验。
+
+没签的原因很直接：代码签名证书要花钱、要过实名审核。项目没有发布渠道，
+为演示产物买证书不划算。但要做真实分发，这一步无法绕过。
+
+### 2. 安装包 98.10MB，其中 99% 不是这个项目写的代码
+
+| 项 | 未压缩 |
+|---|---|
+| `crossdeck.exe`（Electron 44 运行时） | 234.6 MB |
+| `dxcompiler.dll` / `LICENSES.chromium.html` | 24.6 / 19.5 MB |
+| `icudtl.dat` / `resources.pak` | 10.4 / 11.9 MB |
+| `locales/`（已裁到 en-US + zh-CN） | 约 6 MB |
+| **`app.asar`（本项目全部代码）** | **0.96 MB** |
+
+106.38MB → 98.10MB 靠裁 locale + `compression: maximum`。计划的验收线原本是
+`< 90MB`，**实测没过，因此修订口径而不是修订结论**：现在写 `< 100MB`。
+唯一能过线的做法是删掉 `dxcompiler.dll` + `dxil.dll`（约 −19.8MB → 78MB），
+但那会拿掉 WebGPU / Shader Model 6 的着色器编译路径 —— 代价不可测
+（本机 GPU 路径起不来，无从验证），不拿真实用户去赌一个数字。
+理由与取舍见 `docs/plans/2026-10-04-m4-m6-开发计划.md` §2.3。
+
+### 3. 只有 Windows 产物
+
+POSIX 侧没有 CI 也没有对应工具链，本机也验不了。
+计划里 mac / linux 排在取舍顺序最后 —— 与其产出两个"构建成功但没人跑过"的包，
+不如只承诺一个真跑通的。
+
+### 4. 更新源是个占位域名
+
+包里烘死的 `app-update.yml` 指向 `https://updates.invalid/crossdeck`
+（`.invalid` 是保留后缀，永远不会被解析成功）。写一个看起来能用的地址才是误导。
+真跑更新链路的方式是环境变量覆盖：
+
+```bash
+CROSSDECK_UPDATE_URL=http://127.0.0.1:8080 pnpm verify:update-feed
+```
+
+### 5. 自检需要 `--no-sandbox`（仅限本机受限会话）
+
+本机受限会话里 Chromium 的沙箱起不来 viz 层（裸 Electron 也能复现，`--disable-gpu` 不够），
+所以自检要手工加 `--no-sandbox`（命令见上文「受限环境下跑自检」）。
+
+**这条只影响自检这条路，产物本身照常带沙箱启动**（`sandbox: true` +
+`contextIsolation: true` 都在）。但"要手工记着加参数"本身就是个坑：
+写进脚本会让 CI 之外的人以为自检本来就该关沙箱；自动探测降级又要多一条
+会静默生效的分支，而静默降级的测试最容易变成"永远走不到的那条路"。
+怎么收口还没定，暂时保持手工 + 在这里写清。
 
 ---
 
@@ -551,6 +658,7 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
 | `Electron failed to install correctly` | 二进制没拉下来，跑 `pnpm setup:electron` |
 | 无头 / CI 下 `GPU process isn't usable`（退出码 3） | 受限会话里 Chromium 沙箱起不来 viz 层。自检已关 GPU；若仍崩，加 `--no-sandbox`（见下方说明） |
 | `pnpm selfcheck` 出完报告却不返回 | 同一原因：主进程卡在残留的 GPU/viz 子进程上，`app.exit()` 结束不掉。**这不该由应用自己救**（事件循环已停摆，兜底 `setTimeout` 不会触发）。所以 `launch.mjs` 监听应用的 `[selfcheck] DONE ok=… code=…` 哨兵，据此强杀进程树并以**判定结果**而不是"能不能退出"作为退出码 |
+| `pack:win` 报 `Cannot read properties of undefined (reading 'ReadWrite')` | `app-builder-lib` 需要的 `@electron/get` 版本不对。报错里**不含任何包名**，只有读 `out/util/electronGet.js` 才看得出是依赖问题。根因是 npmmirror 对 `@electron/get@^3.0.0` 挑成 3.0.0（上游源挑 3.1.0，而 `ElectronDownloadCacheMode` 是 3.1.0 才有的）。仓库已用 `pnpm-workspace.yaml` 的 `overrides` 钉住 3.1.0；**判断解析结果是否可疑时，换 `--registry=https://registry.npmjs.org/` 对照一次最快** |
 | 白屏、控制台报 CSP 拦截 | 生产 CSP 的 `script-src` 只有 `'self'`。注意 Vite 的 modulepreload polyfill 会注入行内脚本，已在 `vite.config.ts` 关掉 |
 | `selfcheck:web` 报「找不到 Chromium 内核浏览器」 | 它只用系统已有的 Edge / Chrome。装在别处时用 `CROSSDECK_BROWSER=<路径>` 指定 |
 | `selfcheck:web` 的 OPFS 断言失败 | OPFS 需要**安全上下文**：只认 `https://` 或 `127.0.0.1` / `localhost`。脚本起的就是 `127.0.0.1` —— 换成局域网 IP 会失效 |
