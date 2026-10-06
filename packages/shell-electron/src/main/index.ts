@@ -8,10 +8,10 @@ import {
   serveRenderer,
 } from './appProtocol.js';
 import { createWindow, setDevServerUrl } from './windows.js';
-import { registerHandlers, registeredChannelList } from './handlers.js';
+import { registerHandlers, registeredChannelList, grantWorkspaceForSelfCheck } from './handlers.js';
 import { stopAllRuns } from './agentRuntime.js';
 import { startDevServer } from './devServer.js';
-import { runSelfCheck } from './selfcheck.js';
+import { prepareScopeFixture, runSelfCheck } from './selfcheck.js';
 
 /**
  * main 进程入口 —— 启动顺序在这里，且顺序本身是有讲究的：
@@ -90,15 +90,37 @@ app.whenReady().then(async () => {
     const channelCount = registerHandlers();
     console.log(`[crossdeck] 已注册 IPC 通道 ${channelCount} 个：${registeredChannelList().join(', ')}`);
 
+    const selfcheckOutDir = join(PKG_ROOT, 'dist', 'selfcheck');
+
+    // 自检要验证 scope 边界，而无头环境弹不出系统授权对话框 ——
+    // 所以预先造一个夹具目录并**走与用户点击完全相同的 grant 路径**授权它。
+    // 抄近路（直接往表里塞一条）会让自检验证一条用户永远走不到的分支。
+    const fixture = config.selfcheck ? prepareScopeFixture(selfcheckOutDir) : null;
+    if (fixture !== null) {
+      const ws = grantWorkspaceForSelfCheck(fixture.root);
+      console.log(`[crossdeck] 自检夹具工作区：${ws.id} → ${ws.root}（symlink: ${fixture.symlink.status}）`);
+    }
+
     const mainWindow = createWindow('main');
 
     if (config.selfcheck) {
+      if (fixture === null) {
+        // 走到这里说明自检开关与夹具准备脱节了。直接失败而不是继续跑 ——
+        // 没有夹具的"自检通过"是假的：scope 与背压断言全都会被跳过。
+        console.error('[crossdeck] 自检模式缺少 scope 夹具，无法验证越界断言 —— 直接判失败');
+        app.exit(1);
+        return;
+      }
       const code = await runSelfCheck(
         mainWindow,
-        join(PKG_ROOT, 'dist', 'selfcheck'),
+        selfcheckOutDir,
         channelCount,
         registeredChannelList(),
+        fixture,
       );
+      // 快路径：正常环境下 app.exit 立即结束进程。
+      // 受限会话里它可能卡在残留的 GPU/viz 子进程上 —— 那种情况由
+      // launch.mjs 收到 `[selfcheck] DONE` 哨兵后强杀进程树收尾。
       app.exit(code);
       return;
     }
