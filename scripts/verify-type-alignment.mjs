@@ -36,11 +36,16 @@ const SHELL = join(ROOT, 'packages', 'shell-electron');
 const PROJECTS = {
   main: join(SHELL, 'tsconfig.main.json'),
   renderer: join(SHELL, 'tsconfig.renderer.json'),
+  // Web 壳（试金石）：types 置空 + 浏览器构建。
+  // 它同时是**第三种环境** —— 拿不到 node、只拿得到 DOM，
+  // 而且它把 core 的源码整个编译进来，core 有半点平台依赖都会在这里现形。
+  web: join(ROOT, 'packages', 'shell-web', 'tsconfig.json'),
 };
 
 const RENDERER_API = 'packages/shell-electron/src/renderer/api.ts';
 const HANDLERS = 'packages/shell-electron/src/main/handlers.ts';
 const PRELOAD = 'packages/shell-electron/src/preload/bridge.ts';
+const WEB_MAIN = 'packages/shell-web/src/main.ts';
 
 const CASES = [
   {
@@ -155,6 +160,31 @@ export async function __caseI() {
 `,
     expect: /size|mtimeMs/,
   },
+  {
+    id: 'J',
+    project: 'web',
+    what: 'Web 壳（试金石）试图 import node 内置模块 —— 这条一旦放行，"core 无平台假设"就没人证明了',
+    file: WEB_MAIN,
+    append: `
+export async function __caseJ() {
+  const fs = await import('node:fs');
+  return fs.readFileSync('x', 'utf8');
+}
+`,
+    expect: /node:fs|readFileSync|Cannot find module/i,
+  },
+  {
+    id: 'K',
+    project: 'web',
+    what: 'Web 壳试图读 process.env（浏览器里不存在；能写出来说明 types 没置空）',
+    file: WEB_MAIN,
+    append: `
+export function __caseK() {
+  return process.env['HOME'];
+}
+`,
+    expect: /process|Cannot find name/i,
+  },
 ];
 
 /** 在进程内对指定项目做一次全量类型检查（连带检查 contract / core 源码）。 */
@@ -209,7 +239,7 @@ if (!baseline.ok) {
   );
   process.exit(1);
 }
-console.log('✅ main / renderer 两个项目均 0 诊断\n');
+console.log(`✅ ${Object.keys(PROJECTS).join(' / ')} 三个项目均 0 诊断\n`);
 
 console.log('── 负例：故意写错，必须被拦住 ──────────────────────');
 
@@ -262,7 +292,7 @@ if (!final.ok) {
   );
   process.exit(1);
 }
-console.log('✅ 文件已还原，两个项目重新 0 诊断');
+console.log('✅ 文件已还原，三个项目重新 0 诊断');
 
 console.log(
   `\n结果：${caught}/${CASES.length} 个负例被类型系统拦住` +
