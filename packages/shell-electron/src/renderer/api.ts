@@ -1,10 +1,12 @@
 import { IPC, parseIpcError } from '@crossdeck/contract';
 import type {
   AgentStreamEvent,
+  DirEntry,
   IpcErrorCode,
   SessionMeta,
   SystemInfo,
   WindowKind,
+  Workspace,
 } from '@crossdeck/contract';
 
 /**
@@ -21,12 +23,21 @@ import type {
  *   错误对象穿过 contextBridge 后自定义属性会被丢弃（实测见 selfcheck 探针），
  *   所以 code 是由 preload 编码进 message 前缀的，必须用 parseIpcError 解出来。
  *   直接读 err.code 会永远拿到 undefined —— 而且不报错，只是静默丢失语义。
+ *
+ * `detail` 同理走前缀（`[SCOPE_DENIED:OUT_OF_SCOPE] …`）：它存在的意义是让 UI
+ * 不必去猜 message 文本 —— 「还没授权任何目录」和「越界了」要引导用户做不同的事。
  */
-export function describeIpcError(err: unknown): { code: IpcErrorCode | 'UNKNOWN'; text: string } {
+export function describeIpcError(err: unknown): {
+  code: IpcErrorCode | 'UNKNOWN';
+  detail?: string;
+  text: string;
+} {
   const parsed = parseIpcError(err);
+  const tag = parsed.detail === undefined ? parsed.code : `${parsed.code}:${parsed.detail}`;
   return {
     code: parsed.code,
-    text: parsed.code === 'UNKNOWN' ? parsed.message : `[${parsed.code}] ${parsed.message}`,
+    ...(parsed.detail === undefined ? {} : { detail: parsed.detail }),
+    text: parsed.code === 'UNKNOWN' ? parsed.message : `[${tag}] ${parsed.message}`,
   };
 }
 
@@ -66,6 +77,37 @@ export async function abortAgentRun(runId: string): Promise<void> {
 
 export async function openWindow(kind: WindowKind): Promise<{ windowId: number }> {
   return window.bridge.invoke(IPC.windowOpen, { kind });
+}
+
+// ── M4：工作区授权 + 文件系统 ────────────────────────────────
+// 注意所有 fs 调用都必须带上 workspaceId —— 通道契约就是这么定义的，
+// 少传会在**编译期**报错（负例 H 验证的正是这一点）。
+
+export async function listWorkspaces(): Promise<Workspace[]> {
+  return window.bridge.invoke(IPC.workspaceList);
+}
+
+export async function grantWorkspace(): Promise<Workspace | null> {
+  return window.bridge.invoke(IPC.workspaceGrant);
+}
+
+export async function revokeWorkspace(workspaceId: string): Promise<void> {
+  return window.bridge.invoke(IPC.workspaceRevoke, { workspaceId });
+}
+
+export async function listDir(workspaceId: string, path: string): Promise<DirEntry[]> {
+  return window.bridge.invoke(IPC.fsListDir, { workspaceId, path });
+}
+
+export async function readFileText(
+  workspaceId: string,
+  path: string,
+): Promise<{ text: string; truncated: boolean }> {
+  return window.bridge.invoke(IPC.fsReadFile, { workspaceId, path });
+}
+
+export async function controlAgentRun(runId: string, type: 'pause' | 'resume'): Promise<void> {
+  return window.bridge.invoke(IPC.agentControl, { runId, type });
 }
 
 /**

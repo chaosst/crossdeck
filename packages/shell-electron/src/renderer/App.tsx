@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { assertNever } from '@crossdeck/contract';
-import type { AgentStreamEvent, SessionMeta, SystemInfo, Usage, WindowKind } from '@crossdeck/contract';
+import type {
+  AgentStreamEvent,
+  DirEntry,
+  SessionMeta,
+  SystemInfo,
+  Usage,
+  WindowKind,
+  Workspace,
+} from '@crossdeck/contract';
 import {
+  controlAgentRun,
   createSession,
   deleteSession,
   describeIpcError,
   getSystemInfo,
+  grantWorkspace,
+  listDir,
   listSessions,
+  listWorkspaces,
   onAgentEvent,
   openWindow,
+  readFileText,
   startAgentRun,
 } from './api';
 
@@ -36,8 +49,22 @@ export default function App() {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // ── M4：工作区与文件浏览 ──
+  const [paused, setPaused] = useState(false);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWsId, setActiveWsId] = useState<string | null>(null);
+  const [cwd, setCwd] = useState('.');
+  /** `null` = 还没请求过（不是"空"）—— 两者在界面上必须能区分 */
+  const [entries, setEntries] = useState<DirEntry[] | null>(null);
+  const [preview, setPreview] = useState<{ path: string; text: string; truncated: boolean } | null>(
+    null,
+  );
+  const [fsError, setFsError] = useState<string | null>(null);
+
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  const activeWsIdRef = useRef<string | null>(null);
+  activeWsIdRef.current = activeWsId;
 
   // ── 启动：走完 renderer → preload → main → core 整条链才置 ready ──
   useEffect(() => {
@@ -67,6 +94,7 @@ export default function App() {
         case 'start':
           setStreamText('');
           setUsage(null);
+          setPaused(false);
           setRunningRunId(event.runId);
           break;
         case 'token':
@@ -79,10 +107,12 @@ export default function App() {
           break;
         case 'done':
           setRunningRunId(null);
+          setPaused(false);
           setUsage(event.usage);
           break;
         case 'error':
           setRunningRunId(null);
+          setPaused(false);
           setActionError(`[${event.code}] ${event.message}`);
           break;
         default:
@@ -133,6 +163,107 @@ export default function App() {
       setActionError(describeIpcError(err).text);
     }
   }, []);
+
+  // ── 工作区：授权 → 列表 ────────────────────────────────
+
+  /**
+   * 切到某个工作区的某个目录。
+   *
+   * 失败时把 entries 置回 `null`（"不知道"）而不是留着上一份列表 ——
+   * 留着会让界面显示"上一个目录的内容"，看起来像这次读成功了。
+   */
+  const browse = useCallback(async (workspaceId: string, path: string) => {
+    setFsError(null);
+    setPreview(null);
+    try {
+      const list = await listDir(workspaceId, path);
+      setActiveWsId(workspaceId);
+      setCwd(path);
+      setEntries(list);
+    } catch (err) {
+      // 这条路径就是"越界被拒"的可见化：错误信封里的 SCOPE_DENIED 会原样显示
+      setEntries(null);
+      setFsError(describeIpcError(err).text);
+    }
+  }, []);
+
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const list = await listWorkspaces();
+      setWorkspaces(list);
+      // ⚠️ 只设 activeWsId 是不够的：那只是"选中"，目录内容还没请求过。
+      //    少了这次 browse，界面会把"没加载"渲染成"（空目录）"——
+      //    而"空目录"和"没去读"是两件完全不同的事（fs.ts 里同一条原则）。
+      if (list.length > 0 && activeWsIdRef.current === null) {
+        await browse(list[0]!.id, '.');
+      }
+    } catch (err) {
+      setFsError(describeIpcError(err).text);
+    }
+  }, [browse]);
+
+  useEffect(() => {
+    void loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  const handleGrant = useCallback(async () => {
+    setFsError(null);
+    try {
+      const granted = await grantWorkspace();
+      // 用户在系统对话框里点了取消 → 返回 null，这不是错误
+      if (granted === null) return;
+      await loadWorkspaces();
+      await browse(granted.id, '.');
+    } catch (err) {
+      setFsError(describeIpcError(err).text);
+    }
+  }, [loadWorkspaces, browse]);
+
+  const openFile = useCallback(
+    async (name: string) => {
+      const wsId = activeWsIdRef.current;
+      if (wsId === null) return;
+      const rel = cwd === '.' ? name : `${cwd}/${name}`;
+      setFsError(null);
+      try {
+        const res = await readFileText(wsId, rel);
+        setPreview({ path: rel, text: res.text, truncated: res.truncated });
+      } catch (err) {
+        setPreview(null);
+        setFsError(describeIpcError(err).text);
+      }
+    },
+    [cwd],
+  );
+
+  /** 必然失败的探针：把 `..` 塞进相对路径，让"越界被拒"在界面上肉眼可见。 */
+  const probeEscape = useCallback(async () => {
+    const wsId = activeWsIdRef.current;
+    if (wsId === null) return;
+    setPreview(null);
+    try {
+      await readFileText(wsId, '../outside/secret.txt');
+      // 真的读到了才该走这里 —— 说明 PathGuard 漏了，必须显式喊出来
+      setFsError('⚠ 越界读取竟然成功了 —— PathGuard 存在漏洞，请立即排查。');
+    } catch (err) {
+      const described = describeIpcError(err);
+      setFsError(
+        `${described.text}\n（detail=${described.detail ?? '无'}）—— 这是预期的拒绝。`,
+      );
+    }
+  }, []);
+
+  const handlePauseResume = useCallback(async () => {
+    const runId = runningRunId;
+    if (runId === null) return;
+    const next = !paused;
+    try {
+      await controlAgentRun(runId, next ? 'pause' : 'resume');
+      setPaused(next);
+    } catch (err) {
+      setActionError(describeIpcError(err).text);
+    }
+  }, [runningRunId, paused]);
 
   return (
     <div className="min-h-screen bg-[#f6f5f2] text-[#1c1b19]">
@@ -244,9 +375,124 @@ export default function App() {
             </Card>
 
             <Card
+              title="工作区 · 本地文件访问的边界"
+              action={
+                <div className="flex gap-2">
+                  <Button onClick={() => void handleGrant()}>授权目录…</Button>
+                  <Button onClick={() => void probeEscape()} disabled={activeWsId === null}>
+                    <span data-testid="ws-probe-escape">试读 ../</span>
+                  </Button>
+                </div>
+              }
+            >
+              <p className="text-[12px] text-[#8a857c]">
+                所有 fs 通道都必须带上 workspaceId。core 的 PathGuard 做归一化 → 最长 root 前缀匹配 →
+                限定工作区 → symlink 逃逸校验；越界一律拒绝，而不是静默返回空。
+              </p>
+
+              {workspaces.length === 0 ? (
+                <p className="mt-2 text-[13px] text-[#8a857c]">
+                  还没授权任何目录。点「授权目录…」——选中的路径会由 main 进程登记进 WorkspaceStore，
+                  之后 core 才认它是可访问范围（未授权时连 `listDir` 都会以 NO_WORKSPACE 被拒）。
+                </p>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {workspaces.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => void browse(w.id, '.')}
+                      className={
+                        'rounded border px-2 py-0.5 font-mono text-[11px] ' +
+                        (w.id === activeWsId
+                          ? 'border-[#b9b3a5] bg-[#f0eee8] text-[#1c1b19]'
+                          : 'border-[#dfdbd2] bg-[#faf9f6] text-[#5c5750]')
+                      }
+                      title={w.root}
+                    >
+                      {w.mode === 'readwrite' ? 'rw' : 'ro'} · {w.root}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {activeWsId !== null && (
+                <>
+                  <div className="mt-3 flex items-center gap-3 text-[12px]">
+                    <span className="font-mono text-[#8a857c]">
+                      {cwd === '.' ? '（工作区根）' : cwd}
+                    </span>
+                    {cwd !== '.' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const parent = cwd.includes('/')
+                            ? cwd.slice(0, cwd.lastIndexOf('/'))
+                            : '.';
+                          void browse(activeWsId, parent);
+                        }}
+                        className="text-[11px] text-[#5c5750] hover:underline"
+                      >
+                        返回上级
+                      </button>
+                    )}
+                  </div>
+
+                  {entries === null ? (
+                    <p className="mt-2 text-[12px] text-[#a09a90]">（尚未读取）</p>
+                  ) : entries.length === 0 ? (
+                    <p className="mt-2 text-[12px] text-[#a09a90]">（空目录）</p>
+                  ) : (
+                    <ul className="mt-1 divide-y divide-[#eeebe4]">
+                      {entries.map((e) => (
+                        <li key={e.path} className="flex items-center gap-3 py-1.5 text-[12px]">
+                          <span className="w-10 shrink-0 font-mono text-[10px] uppercase text-[#a09a90]">
+                            {e.kind}
+                          </span>
+                          <button
+                            type="button"
+                            data-testid="ws-entry"
+                            data-kind={e.kind}
+                            onClick={() => {
+                              if (e.kind === 'directory') void browse(activeWsId, e.path);
+                              else void openFile(e.name);
+                            }}
+                            className="flex-1 truncate text-left text-[#3c3933] hover:underline"
+                          >
+                            {e.name}
+                          </button>
+                          <span className="text-[11px] text-[#a09a90]">{e.size}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {preview && (
+                    <pre className="mt-3 max-h-[200px] overflow-auto whitespace-pre-wrap rounded border border-[#e5e2da] bg-[#faf9f6] p-3 font-mono text-[12px] leading-relaxed text-[#33302b]">
+                      {preview.text}
+                      {preview.truncated && '\n… (已按 maxReadBytes 截断)'}
+                    </pre>
+                  )}
+                </>
+              )}
+
+              {fsError && (
+                <pre className="mt-3 whitespace-pre-wrap rounded border border-[#e8c9c9] bg-[#fdf6f6] p-3 font-mono text-[11px] leading-relaxed text-[#a12626]">
+                  {fsError}
+                </pre>
+              )}
+            </Card>
+
+            <Card
               title="流式通道"
               action={
                 <div className="flex gap-2">
+                  <Button
+                    onClick={() => void handlePauseResume()}
+                    disabled={runningRunId === null}
+                  >
+                    {paused ? '继续' : '暂停'}
+                  </Button>
                   <Button onClick={handleSend} disabled={runningRunId !== null}>
                     发送
                   </Button>
@@ -254,18 +500,24 @@ export default function App() {
               }
             >
               <p className="text-[12px] text-[#8a857c]">
-                `agent:stream` 是不走 invoke 的单向推送通道。当前内容由 main 的脚本化运行时逐块推送，
-                M3 会换成真正接 core Agent 内核的调用 —— 事件类型不变。
+                `agent:stream` 是不走 invoke 的单向推送通道。产字与推字解耦：上游每 12ms 产一批字进队列，
+                下游每 16ms flush 一次（对齐一帧）；队列超 2000 字符时合并中间态而非丢尾部。
+                暂停走反向通道 `agent:control`（invoke，有 ack），暂停期间**零推送**。
               </p>
               <pre className="mt-3 min-h-[88px] whitespace-pre-wrap rounded border border-[#e5e2da] bg-[#faf9f6] p-3 font-mono text-[12px] leading-relaxed text-[#33302b]">
                 {streamText || (runningRunId ? '等待首个 token…' : '(尚未发送)')}
               </pre>
               <div className="mt-2 flex items-center gap-4 text-[11px] text-[#8a857c]">
-                <span>状态：{runningRunId ? '流式中' : '空闲'}</span>
+                <span>
+                  状态：{runningRunId ? (paused ? '已暂停（背压中）' : '流式中') : '空闲'}
+                </span>
                 {usage && (
                   <span>
                     首 token {usage.ttftMs ?? '?'}ms · 共 {usage.totalMs}ms ·{' '}
                     {usage.completionTokens} token
+                    {usage.mergedChunks !== undefined && usage.mergedChunks > 0 && (
+                      <> · 合并 {usage.mergedChunks} 次</>
+                    )}
                   </span>
                 )}
               </div>
