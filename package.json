@@ -19,13 +19,18 @@
     "selfcheck:web": "pnpm --filter @crossdeck/shell-web build && node packages/shell-web/scripts/web-selfcheck.mjs",
     "typecheck": "tsc -b",
     "typecheck:clean": "tsc -b --clean",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "verify:lint": "node scripts/verify-lint-boundaries.mjs",
     "verify:ipc": "node scripts/verify-type-alignment.mjs",
     "verify:core-purity": "node scripts/verify-core-purity.mjs",
     "verify:scope": "node scripts/verify-core-scope.mjs",
     "verify:agent": "node scripts/verify-core-agent.mjs",
-    "verify": "pnpm typecheck && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:scope && pnpm verify:agent"
+    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:agent"
   },
   "devDependencies": {
+    "@typescript-eslint/parser": "^8.71.0",
+    "eslint": "^10.12.0",
     "typescript": "^5.6.0"
   }
 }

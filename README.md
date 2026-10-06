@@ -17,7 +17,9 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
 大多数"跨端"项目的跨端只停留在 UI 层（一套 CSS 适配多个屏幕）。
 `crossdeck` 跨的是**能力层**：
 
-- **Core 层零平台 API**，由可执行脚本强制（`pnpm verify:core-purity`），不靠自觉
+- **Core 层零平台 API**，两层强制：ESLint 在编辑器里即时报（`noInlineConfig`
+  让 `eslint-disable` 失效），CI 扫描兜底（`pnpm verify:core-purity`）——
+  不靠自觉
 - **依赖倒置**：所有平台能力经 `CapabilityPort` 接口注入，core 不认平台名，只认能力
 - **Web 壳当试金石**：`packages/shell-web` 在浏览器里跑**同一份** core。
   它的 tsconfig `types: []`、Vite 不为 node 内置模块兜底 —— 于是
@@ -100,11 +102,35 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 而这个环境恰好是「core 无平台假设」这条论断唯一的执行者。它一旦失守，
 整条立论就没有证据了。
 
-### 2. Core 铁律（`pnpm verify:core-purity`）
+### 2. Core 铁律：两层执行（`pnpm lint` + `pnpm verify:core-purity` + `pnpm verify:lint`）
 
 扫描 `packages/core/src` 全部 import、检查平台全局引用、核对依赖面只允许
 `@crossdeck/contract`。这条铁律是整个项目的立论基础 —— 如果它只写在文档里，
 第一个赶进度的人加一行 `import fs from 'node:fs'`，项目就废了，而且不会有东西报警。
+
+但它必须是**两层**，因为两层防的是不同的失败模式：
+
+| 层 | 触发时机 | 防的是 |
+|---|---|---|
+| `pnpm lint`（ESLint） | 敲下 `import` 的下一秒，编辑器里就红 | 「我根本不知道有这条规矩」 |
+| `pnpm verify:core-purity`（扫描） | CI / 提交前 | 「我知道，但我先绕过去」 |
+
+而 `eslint.config.mjs` 里最重要的一行是 `linterOptions.noInlineConfig` ——
+它让 `// eslint-disable-next-line` **本身**失效。lint 最常见的死法就是有人
+为了赶进度加一行 disable 注释，从此这个文件再没被检查过；CI 那层扫描恰好堵住它。
+
+`pnpm verify:lint` 是这套规则的负例验收（**17/17 拦住 · 5/5 保持沉默**）：
+每条规则都有能把它打红的注入用例（静态 / 动态 / re-export 三种入口、
+`eslint-disable` 注释、平台全局），外加一组**必须不报**的合法写法 ——
+`import './fs/posixPath.js'` 这种形状正是最容易误报的。
+
+> **实测记录**：`no-restricted-imports` 的 pattern 语义和文档不一致，三个写法
+> 各跑 14 个用例才定下来 ——
+> `paths:[{name:'fs'}]` 会**漏掉** `fs/promises` 和动态 import；
+> `fs/*` 这类 pattern 会**误伤相对路径** `./fs/xxx`（ESLint 先剥掉前导 `./` 再匹配）；
+> `['*','!./**']` 里的否定**根本不生效**。
+> 最后用的是锚定正则的 AST 选择器。一个会误报的规则会被关掉，
+> 一个漏报的规则等于没有 —— 两种都不可接受。
 
 ### 3. 工作区 scope 边界（`pnpm verify:scope`，72/72 通过）
 
@@ -298,7 +324,8 @@ packages/
     tsconfig.renderer.json #  lib=ES2022+DOM + types=[]（没有 node）
 scripts/
   verify-type-alignment.mjs  # 11 个类型负例（三个 tsconfig 项目各覆盖到）
-  verify-core-purity.mjs     # core 铁律扫描
+  verify-lint-boundaries.mjs # 17 个 lint 负例 + 5 个必须沉默的正例
+  verify-core-purity.mjs     # core 铁律扫描（CI 层）
   verify-core-scope.mjs      # PathGuard / WorkspaceStore 的 72 条断言（加载 core 编译产物）
   verify-core-agent.mjs      # 事件总线 / 背压 / 工具链路的 83 条断言（假调度器，0ms 真实等待）
   archive-selfcheck.mjs      # Electron 自检证据归档
@@ -353,8 +380,15 @@ renderer 只能拿到一句没法编程处理的文本，无法区分"参数错�
 
 - `tsconfig.main.json`：`lib: ["ES2022"]` + `types: ["node"]` → 用不了 `document`
 - `tsconfig.renderer.json`：`lib: ["ES2022","DOM"]` + `types: []` → 用不了 `node:*`
+- `shell-web/tsconfig.json`：`lib: [DOM, DOM.AsyncIterable]` + `types: []` → 两者都没有
 
-这和"渲染进程 `nodeIntegration: false`"是同一条边界的两种表述，负例 F/G 就是它的验收。
+这和"渲染进程 `nodeIntegration: false`"是同一条边界的三种表述，
+负例 F / G / J / K 就是它的验收。
+
+顺带记一个"错误信息指向错误方向"的坑：OPFS 的
+`FileSystemDirectoryHandle.entries()` 定义在 `DOM.AsyncIterable` 里，
+不在 `DOM.Iterable`。缺了它只报 `Property 'entries' does not exist` ——
+看起来像 API 不存在，其实是 lib 选错了。
 
 ### 为什么 PathGuard 自己写路径运算，而不用 `node:path`
 
@@ -501,7 +535,8 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
       `StreamBus` / `ToolRegistry`；调度器注入；壳侧只剩三行适配
 - [x] **M4.5(b)** — `shell-web` 试金石：同一份 core 在浏览器里编译、打包、运行，
       59 条断言 + 截图归档
-- [ ] **M4.5(c)** — ESLint `no-restricted-imports` 把铁律提到编辑器即时反馈
+- [x] **M4.5(c)** — ESLint `no-restricted-syntax` 把铁律提到编辑器即时反馈
+      （`noInlineConfig` 让 disable 注释失效；17 个负例 + 5 个必须沉默的正例）
 - [ ] **M1** — 从 navigate 抽取更多 core 模块（真实 LLM 适配层）
 - [ ] **M5** — 自动更新 + 三平台打包 + 性能量化（冷启动 / 内存基线）
 - [ ] **M6** — HarmonyOS 壳（ArkTS + 2in1 鸿蒙 PC 形态）
