@@ -1,9 +1,10 @@
 {
   "name": "@crossdeck/shell-electron",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Electron shell — main (core host + system capabilities) / preload (minimal bridge) / renderer (React 19 UI)",
+  "description": "crossdeck 桌面壳 —— 一个平台无关的 core，多端壳（Electron / Web / HarmonyOS）",
+  "author": "crossdeck",
   "main": "dist/main/index.cjs",
   "dependencies": {
     "@crossdeck/contract": "workspace:*",
@@ -19,7 +20,9 @@
     "start": "node scripts/build.mjs && node scripts/launch.mjs",
     "dev": "node scripts/build.mjs --main-only && node scripts/launch.mjs --dev",
     "selfcheck": "node scripts/build.mjs && node scripts/launch.mjs --selfcheck",
-    "typecheck": "tsc -b"
+    "pack:win": "node scripts/build.mjs && electron-builder --win --config electron-builder.yml",
+    "typecheck": "tsc -b",
+    "verify:update-feed": "node scripts/verify-update-feed.mjs"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

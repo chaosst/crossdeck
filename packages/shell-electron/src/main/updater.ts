@@ -244,6 +244,24 @@ function ensureWired(): void {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = console;
 
+  /**
+   * 用环境变量覆盖更新源。
+   *
+   * 为什么需要：安装包里烘死的 app-update.yml 指向的是**发布服务器**，
+   * 而那台服务器在本项目里并不存在。没有这个开关，"更新链路能跑"就只是一句
+   * 无法演示的话 —— 有了它，把任意 HTTP 静态目录架起来（里面放 latest.yml
+   * 与安装包）就能真的跑完「检查 → 发现新版本 → 下载」，见
+   * scripts/verify-update-feed.mjs。
+   *
+   * 也刻意不做更多：读取配置文件、记住用户选的通道这些留到真需要时再说 ——
+   * 现在多加一层只是多一处能和 app-update.yml 打架的地方。
+   */
+  const feedOverride = process.env['CROSSDECK_UPDATE_URL'];
+  if (feedOverride !== undefined && feedOverride.trim().length > 0) {
+    autoUpdater.setFeedURL({ provider: 'generic', url: feedOverride.trim() });
+    console.log(`[crossdeck] 更新源被 CROSSDECK_UPDATE_URL 覆盖 → ${feedOverride.trim()}`);
+  }
+
   autoUpdater.on('checking-for-update', () => publish({ stage: 'checking' }));
 
   autoUpdater.on('update-available', (raw: unknown) => {
@@ -415,7 +433,35 @@ export async function installUpdate(): Promise<void> {
 }
 
 /**
- * 自检用：把状态机复位到 idle。
+ * 启动后自动查一次更新。
+ *
+ * 为什么需要：没有它，「检查更新」只能靠用户主动点 —— 而一个连启动都不查更新的
+ * 桌面应用，等于把自动更新这条链路做成了摆设。有了它，装在用户机器上的产物
+ * 会自己把新版本找出来。
+ *
+ * 为什么要延迟：启动头几秒是冷启动的关键路径（窗口首帧、首屏数据），
+ * 让一个网络请求去和它抢主线程是最不划算的取舍。延迟本身也让"启动变慢了"
+ * 这类怀疑与更新无关。
+ *
+ * ⚠️ 调用方**必须**在自检模式下跳过它：自检断言"推送恰好 1 条状态"，
+ *    多一次启动检查就会把计数打乱，而那种失败看起来会像推送通道坏了。
+ */
+const STARTUP_CHECK_DELAY_MS = 4_000;
+
+export function scheduleStartupUpdateCheck(): void {
+  if (!isUpdateSupported()) return;
+  const timer = setTimeout(() => {
+    void checkForUpdates().catch((err: unknown) => {
+      // 这里不抛给别人：失败状态已经经 updateStatus 推给 UI 了，
+      // 再冒泡只会变成一条没人处理的 unhandledRejection。
+      console.log('[crossdeck] 启动期检查更新未成功（状态已推送）:', classifyFailure(err).message);
+    });
+  }, STARTUP_CHECK_DELAY_MS);
+  // 定时器不该把进程吊着不退出
+  timer.unref();
+}
+
+/** 自检用：把状态机复位到 idle。
  *
  * ⚠️ 不是为了"清理"，是为了让**退订断言**有鉴别力：
  *    publish 会丢弃与上一次完全相同的状态（上游每秒几十次进度事件里

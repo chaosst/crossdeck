@@ -21,6 +21,8 @@ const DEST = join(ROOT, 'docs', 'evidence');
 
 const REPORT = join(SRC, 'report.json');
 const SHOT = join(SRC, 'window.png');
+/** 更新链路端到端验证的产物（由 verify:update-feed 生成，可能不存在） */
+const UPDATE_FEED = join(SRC, 'update-feed.json');
 
 if (!existsSync(REPORT)) {
   console.error(`❌ 找不到自检报告：${REPORT}\n   先跑 pnpm selfcheck`);
@@ -103,6 +105,18 @@ const summary = {
       report.probe?.updateEventsBeforeUnsub !== undefined &&
       report.probe?.updateEventsBeforeUnsub === report.probe?.updateEventsAfterUnsub,
   },
+  /**
+   * ── M5 的另一半：打包产物 + 真实 feed 的端到端 ──
+   *
+   * 上面那节（m5）只覆盖了「不具备条件时如实报错」。这一节覆盖反过来的那条：
+   * 真的有新版本时，检查 → 发现 → 下载 → 就绪 是不是通的。
+   * 两节都绿，"自动更新"才算被证明过 —— 只验一半的话，
+   * 未打包报错正确 ≠ 打包后能升级。
+   *
+   * 没跑过 `pnpm verify:update-feed` 时这里是 null，也就是"未验证"，
+   * 而不是"通过" —— 这两者在文档里必须长得不一样。
+   */
+  m5Feed: readUpdateFeedEvidence(),
   /** 不判失败、但必须被看见的事项（例如平台不允许建 symlink） */
   warnings: report.warnings ?? [],
   failures: report.failures,
@@ -111,8 +125,57 @@ const summary = {
 };
 writeFileSync(join(DEST, 'selfcheck-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
 
+/**
+ * 读取更新链路端到端验证的证据。
+ *
+ * 该证据由 `pnpm verify:update-feed` 生成（它要先有打包产物，所以不能并进自检里跑）。
+ * 归档时把两份产物拼成一个可读摘要：阶段轨迹 + HTTP 请求清单 +
+ * "界面渲染出来的阶段 / 主进程终态"三处一致性。
+ */
+function readUpdateFeedEvidence() {
+  if (!existsSync(UPDATE_FEED)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(readFileSync(UPDATE_FEED, 'utf8'));
+  } catch {
+    return null;
+  }
+  const probe = payload.report ?? null;
+  if (probe === null) return null;
+
+  copyFileSync(UPDATE_FEED, join(DEST, 'update-feed.json'));
+  return {
+    verifiedAt: payload.ranAt,
+    appVersion: probe.appVersion,
+    packaged: probe.packaged,
+    feedUrl: probe.feedUrl,
+    expectedVersion: probe.expectedVersion,
+    /** 渲染层收到的全部推送，按到达顺序 —— 这是界面真正看到的东西 */
+    stageTrace: (probe.frames ?? []).map(formatStageFrame),
+    rendererFinalStageAttr: probe.rendererFinalStageAttr,
+    mainFinalStage: probe.mainFinalStage,
+    rendererHasUpdateCard: probe.rendererHasUpdateCard,
+    httpRequests: payload.requests ?? [],
+    failures: probe.failures ?? [],
+    ok: probe.ok,
+    reportFile: 'docs/evidence/update-feed.json',
+  };
+}
+
+function formatStageFrame(f) {
+  if (f.stage === 'downloading') return `downloading(${String(f.percent)}%)`;
+  if (f.version !== null && f.version !== undefined) return `${f.stage}(${f.version})`;
+  return f.stage;
+}
+
 console.log('── 归档自检证据 ────────────────────────────────');
 console.log(`  ok=${report.ok}  mode=${report.mode}  ranAt=${report.ranAt}`);
 console.log(`  docs/evidence/${reportName}`);
 if (shotName) console.log(`  docs/evidence/${shotName}`);
+if (summary.m5Feed === null) {
+  console.log('  更新链路端到端：未验证（跑 pnpm verify:update-feed 可补上打包产物 + 真实 feed 那一半）');
+} else {
+  console.log(`  更新链路端到端：ok=${summary.m5Feed.ok} 轨迹 ${summary.m5Feed.stageTrace.join(' → ')}`);
+  console.log('  docs/evidence/update-feed.json');
+}
 console.log('  docs/evidence/selfcheck-summary.json');

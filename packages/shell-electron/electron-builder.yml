@@ -1,0 +1,102 @@
+# electron-builder 配置 —— M5 的"可安装产物"那一半。
+#
+# 两条设计前提（都由 build.mjs 保证，这里只是兑现）：
+#
+#   1. **不带 node_modules**。main / preload 由 esbuild 打成单文件，
+#      `external` 只有 electron 与 vite（vite 还只在 --dev 下动态 import 到）。
+#      contract / core 是 TS 源码包，靠打包内联 —— 所以运行期一个外部模块都不需要。
+#      产物因此只有几MB，安装包体积能压住（计划里的验收是 < 90MB）。
+#
+#   2. **asar 开着**。渲染层走 app:// 协议 + net.fetch(file://)，
+#      Electron 的 file 协议能透明读 asar，不需要解包。
+#
+# 刻意不做的事：
+#   · 不配 code signing。本机没有证书，硬配只会得到一个更迷惑的失败。
+#     未签名带来的真实后果写在 README 的"已知限制"里，不藏。
+#   · 不配 mac / linux 目标。计划里它们排在取舍顺序的最后，且本机没有对应工具链。
+
+appId: site.crossdeck.app
+productName: crossdeck
+copyright: crossdeck
+
+directories:
+  output: dist/pack
+  buildResources: build
+
+# 压缩级别。
+#
+# 默认是 normal。这里取 maximum 是同一条取舍的另一半：
+# 构建慢几分钟换安装包小几个百分点 —— 打包是一次性的，下载是每个用户都要付的。
+# 与 electronLanguages 一起，才勉强够到计划里 < 90MB 的验收线；
+# 单靠任何一项都够不着（见 win.electronLanguages 处的实测数字）。
+compression: maximum
+
+# 显式列出要打进包里的东西 —— 白名单比黑名单可控。
+files:
+  - dist/main/**
+  - dist/preload/**
+  - dist/renderer/**
+  - package.json
+  # 主进程是自包含的 bundle，运行期不需要任何 node_modules。
+  # 这一条是安装包体积能守住 < 90MB 的主要原因。
+  - '!node_modules/**'
+  # 自检产物与类型产物都不该进安装包
+  - '!dist/selfcheck/**'
+  - '!dist/types-*/**'
+  - '!scripts/**'
+  - '!**/*.map'
+
+# 打包后的 package.json 里把 workspace 依赖抹掉。
+# 不抹的话 electron-builder 会去解析 `workspace:*`（npm 协议，它不认识），
+# 而且会试图把两个 TS 源码包当运行期依赖拷进去 —— 那份拷贝在运行期毫无用处。
+extraMetadata:
+  main: dist/main/index.cjs
+  dependencies: {}
+  devDependencies: {}
+
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 没有证书可签，但保留 exe 元数据改写（图标 / 版本信息）
+  signAndEditExecutable: true
+  # 只留两个语言的 .pak。
+  #
+  # 实测（第一次打包后逐个文件量的）：未压缩产物 **369MB**，其中 locales 占 49MB，
+  # 而**我们自己的代码（app.asar）只有 964KB**。也就是说安装包的体积几乎完全
+  # 由 Electron 运行时决定，能砍的只有我们自己用不到的那部分 —— locales 是最大的一块。
+  # 保留 en-US 与 zh-CN：界面本身是中英混排的，砍掉 zh-CN 会让系统菜单变英文。
+  #
+  # 刻意不动的东西及理由：
+  #   · LICENSES.chromium.html（19.5MB）—— 法律要求随附，且 HTML 压缩比极高，
+  #     砍了省不了多少、省错了地方。
+  #   · dxcompiler.dll（24.5MB）/ vk_swiftshader.dll（5.3MB）—— 图形后端。
+  #     在我们控制不了的用户机器上，删掉它们的收益是几 MB，代价是白屏。
+  electronLanguages:
+    - en-US
+    - zh-CN
+
+nsis:
+  # 不做一键安装：默认装到用户目录、允许改路径 —— 一个面向开发者的工具
+  # 把安装位置藏起来只会让人在需要清理时找不到东西。
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: ${productName}-Setup-${version}.${ext}
+  # 未签名安装包在 SmartScreen 上会弹警告，这是事实，不做掩盖。
+
+# 更新源。electron-builder 会据此生成两样东西：
+#   · latest.yml —— 放在**服务器上**的元数据（谁是最新版、文件校验值）
+#   · app-update.yml —— 打进包里，告诉 electron-updater 去哪儿看
+# 这里的域名是个占位（.invalid 是保留后缀，永远不会被解析成功）：
+# 我们没有真实发布服务器，写一个看起来能用的地址反而是误导。
+# 要真跑更新链路，用 CROSSDECK_UPDATE_URL 覆盖成任意 HTTP 静态目录即可 ——
+# 见 packages/shell-electron/scripts/verify-update-feed.mjs。
+publish:
+  - provider: generic
+    url: https://updates.invalid/crossdeck

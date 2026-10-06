@@ -12,6 +12,8 @@ import { registerHandlers, registeredChannelList, grantWorkspaceForSelfCheck } f
 import { stopAllRuns } from './agentRuntime.js';
 import { startDevServer } from './devServer.js';
 import { prepareScopeFixture, runSelfCheck } from './selfcheck.js';
+import { runUpdateFeedProbe } from './updateProbe.js';
+import { scheduleStartupUpdateCheck } from './updater.js';
 
 /**
  * main 进程入口 —— 启动顺序在这里，且顺序本身是有讲究的：
@@ -35,19 +37,19 @@ setRuntimeConfig(config);
 // 显式命名一次，缓存/日志/单实例锁的位置都是可预期的（且方便清理）。
 app.setName('crossdeck');
 
-// 自检跑在 CI / 无头 / 受限环境里，那里 GPU 进程经常直接崩：
+// 自检 / 更新探针跑在 CI / 无头 / 受限环境里，那里 GPU 进程经常直接崩：
 //   GPU process exited unexpectedly → FATAL: GPU process isn't usable. Goodbye.（退出码 3）
 // 此时窗口还没画出来，截图与 DOM 断言全都拿不到。
-// 自检只需要渲染出 DOM 并截图，软件渲染完全够用，所以彻底关掉 GPU。
+// 这两条路径只需要渲染出 DOM 并截图，软件渲染完全够用，所以彻底关掉 GPU。
 // 正常 dev / start 不受影响，保持硬件加速。
-if (config.selfcheck) {
+if (config.selfcheck || config.updateProbe) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu');
   app.commandLine.appendSwitch('disable-gpu-compositing');
 }
 
-// 自检模式必须能并发跑（否则上一次没退干净就再也没有下一次），故不加锁。
-if (!config.selfcheck && !app.requestSingleInstanceLock()) {
+// 自检 / 探针模式必须能并发跑（否则上一次没退干净就再也没有下一次），故不加锁。
+if (!config.selfcheck && !config.updateProbe && !app.requestSingleInstanceLock()) {
   app.exit(0);
 }
 
@@ -56,7 +58,7 @@ registerAppScheme();
 // pkgRoot = packages/shell-electron（__dirname 是 dist/main）
 const PKG_ROOT = join(__dirname, '..', '..');
 
-const gotLock = !config.selfcheck;
+const gotLock = !config.selfcheck && !config.updateProbe;
 
 app.whenReady().then(async () => {
   try {
@@ -103,6 +105,15 @@ app.whenReady().then(async () => {
 
     const mainWindow = createWindow('main');
 
+    if (config.updateProbe) {
+      // 更新 feed 探针：跑完「检查 → 发现新版本 → 下载 → 就绪」再退出。
+      // 这里同样不 await 后续流程 —— 探针的收尾由 scripts/verify-update-feed.mjs
+      // 依哨兵强杀进程树完成（受限会话里 app.exit 未必能结束进程，同 selfcheck）。
+      const code = await runUpdateFeedProbe(mainWindow, config.expectVersion);
+      app.exit(code);
+      return;
+    }
+
     if (config.selfcheck) {
       if (fixture === null) {
         // 走到这里说明自检开关与夹具准备脱节了。直接失败而不是继续跑 ——
@@ -128,6 +139,11 @@ app.whenReady().then(async () => {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow('main');
     });
+
+    // 启动后自己查一次更新。**自检与探针模式必须跳过** —— 自检断言"推送恰好 1 条
+    // update:status"，多一次启动检查会把计数打乱，而那种失败看起来会像
+    // 推送通道坏了，排查方向完全错；探针模式下它会变成轨迹里第二条 checking。
+    scheduleStartupUpdateCheck();
   } catch (err) {
     console.error('[crossdeck] 启动失败：', err);
     app.exit(1);

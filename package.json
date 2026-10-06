@@ -14,6 +14,7 @@
     "dev": "pnpm --filter @crossdeck/shell-electron dev",
     "start": "pnpm --filter @crossdeck/shell-electron start",
     "selfcheck": "pnpm --filter @crossdeck/shell-electron selfcheck && node scripts/archive-selfcheck.mjs",
+    "pack:win": "pnpm --filter @crossdeck/shell-electron pack:win",
     "build:web": "pnpm --filter @crossdeck/shell-web build",
     "dev:web": "pnpm --filter @crossdeck/shell-web dev",
     "selfcheck:web": "pnpm --filter @crossdeck/shell-web build && node packages/shell-web/scripts/web-selfcheck.mjs",
@@ -27,7 +28,8 @@
     "verify:scope": "node scripts/verify-core-scope.mjs",
     "verify:agent": "node scripts/verify-core-agent.mjs",
     "verify:update": "node scripts/verify-core-update.mjs",
-    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:agent && pnpm verify:update"
+    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:agent && pnpm verify:update",
+    "verify:update-feed": "pnpm --filter @crossdeck/shell-electron verify:update-feed"
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.71.0",
