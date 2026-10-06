@@ -260,6 +260,69 @@ console.log('\n── ⑧ 进度：规范化掉"说不清哪里不对"的三种�
 }
 
 // ─────────────────────────────────────────────────────────────
+console.log('\n── ⑨ feed：从候选清单里挑出该装的那一个（"模拟新版本可检出"）──');
+{
+  const { selectUpgrade, normalizeVersionLabel } = core;
+
+  if (typeof selectUpgrade !== 'function') {
+    failures.push('core 没有导出 selectUpgrade —— feed 选择逻辑尚未实现');
+  } else {
+    const R = (...versions) => versions.map((version) => ({ version }));
+
+    // 基本检出
+    const basic = selectUpgrade('1.9.0', R('1.10.0'));
+    check('能检出比当前更高的版本', basic.picked?.version === '1.10.0', basic);
+
+    check('没有更高的版本时返回 null（而不是抛错）', selectUpgrade('1.10.0', R('1.9.0', '1.10.0')).picked === null);
+
+    // ① feed 顺序不是契约：必须取最高的，不是第一个
+    const unsorted = selectUpgrade('1.0.0', R('1.2.0', '1.10.0', '1.3.0'));
+    check('清单乱序时取**最高**版本（不是第一个）', unsorted.picked?.version === '1.10.0', unsorted);
+
+    // ② 一条脏数据不能让整份清单报废
+    const dirty = selectUpgrade('1.0.0', R('1.2.x', '', '1.4.0', '1.03.0'));
+    check('畸形版本被跳过，不影响后面的有效候选', dirty.picked?.version === '1.4.0', dirty);
+    check('畸形版本被记进 rejected（诊断用）', dirty.rejected.filter((r) => r.reason === 'invalid').length >= 2, dirty.rejected);
+
+    // ③ 更旧的版本永远不是"该装的"，即使 allowDowngrade 开着
+    const older = selectUpgrade('2.0.0', R('1.0.0'), { allowDowngrade: true });
+    check(
+      'allowDowngrade 不改变"该不该升级"的答案（它只服务于用户指定版本重装）',
+      older.picked === null,
+      older,
+    );
+
+    // ④ 预发布默认不收，开了才收
+    check('默认不收预发布候选', selectUpgrade('1.0.0', R('1.1.0-beta.1')).picked === null);
+    check('显式开启后收预发布', selectUpgrade('1.0.0', R('1.1.0-beta.1'), { allowPrerelease: true }).picked?.version === '1.1.0-beta.1');
+    check(
+      '同时有正式版与预发布时，默认通道选正式版',
+      selectUpgrade('1.0.0', R('1.1.0-beta.9', '1.1.0')).picked?.version === '1.1.0',
+    );
+    check(
+      '开启预发布通道后，更高的 beta 才是答案',
+      selectUpgrade('1.0.0', R('1.1.0', '1.2.0-beta.1'), { allowPrerelease: true }).picked?.version === '1.2.0-beta.1',
+    );
+    // 预发布用户"毕业"到同号正式版 —— selectUpgrade 必须放行，否则用户被永久困住
+    check(
+      '预发布用户能"毕业"到同号正式版（没开开关也要能升）',
+      selectUpgrade('1.1.0-beta.2', R('1.1.0')).picked?.version === '1.1.0',
+    );
+
+    // ⑤ 展示用的版本号要与 app.getVersion() 同一种写法
+    check('展示标签去掉 v 前缀并补全缺失段', normalizeVersionLabel('v1.2') === '1.2.0', normalizeVersionLabel('v1.2'));
+
+    // ⑥ picked 带着 notes / releasedAt 一起回来（UI 要显示更新说明）
+    const rich = selectUpgrade('1.0.0', [{ version: '1.1.0', notes: '修了几个 bug', releasedAt: 1759500000000 }]);
+    check(
+      'picked 保留 notes 与 releasedAt（否则 UI 只能显示一个光秃秃的版本号）',
+      rich.picked?.notes === '修了几个 bug' && rich.picked?.releasedAt === 1759500000000,
+      rich.picked,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 console.log('\n──────────────────────────────────────────────────────');
 if (failures.length > 0) {
   console.log(`❌ ${failures.length} 条断言失败：`);

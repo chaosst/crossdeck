@@ -32,3 +32,4 @@ export * from './agent/model.js';
 export * from './agent/runtime.js';
 export * from './update/version.js';
 export * from './update/progress.js';
+export * from './update/feed.js';
