@@ -10,7 +10,7 @@ import type {
   SystemInfo,
   Workspace,
 } from '@crossdeck/contract';
-import { SessionStore, WorkspaceStore, createPathGuard, joinPath } from '@crossdeck/core';
+import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } from '@crossdeck/core';
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
@@ -65,29 +65,19 @@ const fsPort = createFsPort({ guard, workspaces });
 /**
  * 把 `{ workspaceId, path }` 变成一条**已授权的绝对路径**。
  *
- * 所有 fs 通道都必须从这里进。「限定在指定工作区内」这一条只能加在这一层 ——
- * core 的 PathGuard 不知道「当前工作区」这种隐式上下文（那种上下文必然是 bug 之源）。
+ * 拼接 + 限定工作区 + 判定这三步已下沉 core（`resolveInWorkspace`）——
+ * Web 壳要用同一段逻辑的那一刻就到了二选一的关口：抄一份，或者下沉。
+ * 抄一份的代价不是多写 15 行，而是**两端的授权语义从此可能走散**，
+ * 而这是全项目最不能走散的一段代码。
+ *
+ * 这里只负责**把领域结果翻译成 IPC 错误**：那是壳才知道的事。
  */
-async function resolveInWorkspace(workspaceId: string, relPath: string): Promise<string> {
-  const workspace = workspaces.get(workspaceId);
-  if (workspace === undefined) {
-    throw new AppError(
-      'SCOPE_DENIED',
-      `工作区不存在或已撤销：${workspaceId}`,
-      'NO_WORKSPACE',
-    );
+async function resolveOrThrow(workspaceId: string, relPath: string): Promise<string> {
+  const resolved = await resolveInWorkspace(workspaces, guard, workspaceId, relPath);
+  if (!resolved.ok) {
+    throw new AppError('SCOPE_DENIED', PATH_DENY_MESSAGES[resolved.reason], resolved.reason);
   }
-
-  const joined = joinPath(workspace.root, relPath);
-  if (joined === null) {
-    throw new AppError('SCOPE_DENIED', PATH_DENY_MESSAGES.BAD_PATH, 'BAD_PATH');
-  }
-
-  const decision = await guard.check(joined, { withinWorkspaceId: workspaceId });
-  if (!decision.allowed) {
-    throw new AppError('SCOPE_DENIED', PATH_DENY_MESSAGES[decision.reason], decision.reason);
-  }
-  return decision.resolved;
+  return resolved.absolute;
 }
 
 /**
@@ -204,22 +194,22 @@ export function registerHandlers(): number {
 
   // ── 文件系统（每条都必须先过 scope 校验）────────────────
   defineInvoke(IPC.fsListDir, async (req): Promise<DirEntry[]> => {
-    const abs = await resolveInWorkspace(req.workspaceId, req.path);
+    const abs = await resolveOrThrow(req.workspaceId, req.path);
     return withFsErrors('列目录', () => fsPort.listDir(abs));
   });
 
   defineInvoke(IPC.fsReadFile, async (req) => {
-    const abs = await resolveInWorkspace(req.workspaceId, req.path);
+    const abs = await resolveOrThrow(req.workspaceId, req.path);
     return withFsErrors('读文件', () => fsPort.readFile(abs));
   });
 
   defineInvoke(IPC.fsWriteFile, async (req): Promise<void> => {
-    const abs = await resolveInWorkspace(req.workspaceId, req.path);
+    const abs = await resolveOrThrow(req.workspaceId, req.path);
     await withFsErrors('写文件', () => fsPort.writeFile(abs, req.data));
   });
 
   defineInvoke(IPC.fsStat, async (req): Promise<FileStat> => {
-    const abs = await resolveInWorkspace(req.workspaceId, req.path);
+    const abs = await resolveOrThrow(req.workspaceId, req.path);
     return withFsErrors('取文件信息', () => fsPort.stat(abs));
   });
 

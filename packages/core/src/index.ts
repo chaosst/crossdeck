@@ -23,6 +23,7 @@ export * from './session/store.js';
 export * from './fs/posixPath.js';
 export * from './fs/workspaceStore.js';
 export * from './fs/pathGuard.js';
+export * from './fs/resolveInWorkspace.js';
 export * from './events/streamBus.js';
 export * from './agent/deps.js';
 export * from './agent/backpressure.js';
