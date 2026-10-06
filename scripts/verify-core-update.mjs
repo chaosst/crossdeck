@@ -189,6 +189,77 @@ console.log('\n── ⑦ 决策：返回值形状必须可判别 ────�
 }
 
 // ─────────────────────────────────────────────────────────────
+console.log('\n── ⑧ 进度：规范化掉"说不清哪里不对"的三种回退 ────────');
+{
+  const { nextProgress, INITIAL_PROGRESS, isProgressComplete } = core;
+
+  if (typeof nextProgress !== 'function' || typeof INITIAL_PROGRESS !== 'object') {
+    failures.push('core 没有导出 nextProgress / INITIAL_PROGRESS —— 进度追踪器尚未实现');
+  } else {
+    // 正常序列：单调上升
+    let s = INITIAL_PROGRESS;
+    check('起始状态：无版本、0%、0 异常', s.version === null && s.percent === 0 && s.anomalies === 0, s);
+
+    s = nextProgress(s, { version: '1.2.0', percent: 12.7 });
+    check('浮点进度取下整（12.7 → 12，UI 不需要自己 floor）', s.percent === 12, s);
+    s = nextProgress(s, { version: '1.2.0', percent: 48.2 });
+    s = nextProgress(s, { version: '1.2.0', percent: 100 });
+    check('正常序列走完后到 100', s.percent === 100 && isProgressComplete(s), s);
+    check('正常序列**不**产生异常计数', s.anomalies === 0, s);
+
+    // ① 回退：percent 往回走（chunk 重试）
+    let back = nextProgress(INITIAL_PROGRESS, { version: '1.2.0', percent: 80 });
+    back = nextProgress(back, { version: '1.2.0', percent: 35 });
+    check('进度回退时**保持**已到达的最大值（不跟着往回跳）', back.percent === 80, back);
+    check('回退会被记成一次异常（上游不可信的观测信号）', back.anomalies === 1, back);
+
+    // ② 换版本：必须归零重来
+    const switched = nextProgress(
+      { version: '1.2.0', percent: 87, anomalies: 0 },
+      { version: '1.4.0', percent: 3 },
+    );
+    check('换版本后进度归零重来（否则新版会卡在 99% 不动）', switched.percent === 3, switched);
+    check('换版本本身不算异常（那是正常流程）', switched.anomalies === 0, switched);
+
+    // v 前缀不算换版本 —— 归一化后是同一个版本。
+    // ⚠️ 这里刻意把百分比**调低**：如果拿"往上涨"的序列来测，
+    //    归一化与否的结果都是 45，断言根本分不出对错（这组变异第一次就是
+    //    这样存活下来的）。只有"往回走"的输入才能把两条路分开：
+    //    归一化 → 保持 90；没归一化 → 误判成换版本，打回 20。
+    const prefixed = nextProgress(
+      { version: '1.2.0', percent: 90, anomalies: 0 },
+      { version: 'v1.2.0', percent: 20 },
+    );
+    check(
+      '`v1.2.0` 与 `1.2.0` 视为同一版本（误判成"换版本"会把进度打回 20）',
+      prefixed.percent === 90,
+      prefixed,
+    );
+    check('归一化后走的是"回退"分支，因此记一笔异常', prefixed.anomalies === 1, prefixed);
+
+    // ③ 越界：上游在说谎
+    const over = nextProgress(INITIAL_PROGRESS, { version: '1.2.0', percent: 130 });
+    check('>100 夹到 100', over.percent === 100, over);
+    check('越界记一笔异常', over.anomalies === 1, over);
+    const under = nextProgress(INITIAL_PROGRESS, { version: '1.2.0', percent: -5 });
+    check('<0 夹到 0（不是负数）', under.percent === 0, under);
+
+    // ④ NaN / Infinity：绝不能进状态
+    // 一旦 max(NaN, x) 写进状态，进度条**从此永不更新** —— 这是本函数
+    // 唯一一行"防御性"代码存在的原因。
+    const nan = nextProgress({ version: '1.2.0', percent: 60, anomalies: 0 }, { version: '1.2.0', percent: Number.NaN });
+    check('NaN 不污染状态（保持原值，而不是变成 NaN）', nan.percent === 60, nan);
+    check('NaN 记一笔异常', nan.anomalies === 1, nan);
+    const inf = nextProgress({ version: '1.2.0', percent: 60, anomalies: 0 }, { version: '1.2.0', percent: Number.POSITIVE_INFINITY });
+    check('Infinity 不污染状态', Number.isFinite(inf.percent) && inf.percent === 60, inf);
+
+    // 换版本时若首帧就是 NaN：应当归零，且不把旧版本的百分比带过去
+    const switchedNaN = nextProgress({ version: '1.2.0', percent: 90, anomalies: 2 }, { version: '1.4.0', percent: Number.NaN });
+    check('换版本 + NaN：归零，且保留历史异常计数', switchedNaN.percent === 0 && switchedNaN.anomalies === 3, switchedNaN);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 console.log('\n──────────────────────────────────────────────────────');
 if (failures.length > 0) {
   console.log(`❌ ${failures.length} 条断言失败：`);
