@@ -21,6 +21,16 @@ export type IpcErrorCode =
   | 'BAD_REQUEST'
   | 'NOT_FOUND'
   | 'FORBIDDEN'
+  /**
+   * 路径不在任何已授权工作区之内（M4 新增）。
+   *
+   * 为什么不复用 FORBIDDEN：UI 要区分「还没授权任何目录」（应引导去授权）
+   * 与「越界了」（应报错），两者给用户的动作完全不同。
+   * 压成一个码之后只能去解析 message 文本 —— 那正是本项目要消灭的东西。
+   */
+  | 'SCOPE_DENIED'
+  /** 工作区是只读的，写操作被拒（M4 新增） */
+  | 'READONLY'
   | 'ABORTED'
   | 'INTERNAL';
 
@@ -29,6 +39,12 @@ export interface SerializedError {
   readonly __crossdeckError: true;
   readonly code: IpcErrorCode;
   readonly message: string;
+  /**
+   * 结构化细节 —— 目前用于携带 PathDenyReason（NO_WORKSPACE / BAD_PATH /
+   * OUT_OF_SCOPE / ESCAPE_ATTEMPT），让调用侧不必解析 message 就能分流。
+   * 可选：缺失时不影响任何既有分支。
+   */
+  readonly detail?: string;
 }
 
 /** handler 的统一返回信封。 */
@@ -39,11 +55,14 @@ export type IpcEnvelope<T> =
 /** 带错误码的业务异常 —— core 与各壳都可抛。 */
 export class AppError extends Error {
   readonly code: IpcErrorCode;
+  readonly detail?: string;
 
-  constructor(code: IpcErrorCode, message: string) {
+  constructor(code: IpcErrorCode, message: string, detail?: string) {
     super(message);
     this.name = 'AppError';
     this.code = code;
+    // exactOptionalPropertyTypes 开着：不能显式赋 undefined
+    if (detail !== undefined) this.detail = detail;
   }
 }
 
@@ -54,7 +73,8 @@ export function toSerializedError(err: unknown): SerializedError {
   if (isSerializedError(err)) return err;
 
   if (err instanceof AppError) {
-    return { __crossdeckError: true, code: err.code, message: err.message };
+    const base = { __crossdeckError: true, code: err.code, message: err.message } as const;
+    return err.detail === undefined ? base : { ...base, detail: err.detail };
   }
   if (err instanceof Error) {
     return { __crossdeckError: true, code: 'INTERNAL', message: err.message };
@@ -65,13 +85,18 @@ export function toSerializedError(err: unknown): SerializedError {
 export function isSerializedError(value: unknown): value is SerializedError {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<SerializedError>;
-  return v.__crossdeckError === true && typeof v.code === 'string' && typeof v.message === 'string';
+  if (v.__crossdeckError !== true) return false;
+  if (typeof v.code !== 'string' || typeof v.message !== 'string') return false;
+  if (v.detail !== undefined && typeof v.detail !== 'string') return false;
+  return true;
 }
 
 /** 反序列化回 AppError。拿到非信封载荷时也给出可诊断的兜底。 */
 export function toAppError(value: unknown): AppError {
   if (isSerializedError(value)) {
-    return new AppError(value.code, value.message);
+    return value.detail === undefined
+      ? new AppError(value.code, value.message)
+      : new AppError(value.code, value.message, value.detail);
   }
   return new AppError(
     'INTERNAL',
@@ -112,7 +137,7 @@ export function isIpcEnvelope(value: unknown): value is IpcEnvelope<unknown> {
  *   所以「错误信封」只解决了 main → preload 这一段；
  *   preload → renderer 这一段必须换一种编码方式：把 code 塞进 message。
  *
- * 于是约定一个前缀格式：`[CODE] 原始信息`。
+ * 于是约定一个前缀格式：`[CODE] 原始信息`，带 detail 时是 `[CODE:DETAIL] 原始信息`。
  * 好处是降级友好 —— 就算调用方完全不做解析，人在 DevTools 里也能一眼看出类别。
  */
 
@@ -121,6 +146,8 @@ const KNOWN_CODES: readonly IpcErrorCode[] = [
   'BAD_REQUEST',
   'NOT_FOUND',
   'FORBIDDEN',
+  'SCOPE_DENIED',
+  'READONLY',
   'ABORTED',
   'INTERNAL',
 ];
@@ -132,13 +159,22 @@ export function isIpcErrorCode(value: string): value is IpcErrorCode {
 /** 把任意错误编码成可穿过 contextBridge 的 Error。 */
 export function encodeBridgeError(err: unknown): Error {
   const serialized = toSerializedError(err);
-  return new Error(`[${serialized.code}] ${serialized.message}`);
+  const tag =
+    serialized.detail === undefined
+      ? serialized.code
+      : `${serialized.code}:${serialized.detail}`;
+  return new Error(`[${tag}] ${serialized.message}`);
 }
 
 export interface ParsedIpcError {
   /** 解析不出已知 code 时返回 'UNKNOWN' —— 典型场景是通道未注册这类传输层失败。 */
   code: IpcErrorCode | 'UNKNOWN';
   message: string;
+  /**
+   * 结构化细节，取自 `[CODE:DETAIL]` 前缀。
+   * 调用侧要用 `isPathDenyReason` 之类的守卫做窄化，不要直接当业务值用。
+   */
+  detail?: string;
 }
 
 /**
@@ -150,10 +186,14 @@ export interface ParsedIpcError {
  */
 export function parseIpcError(value: unknown): ParsedIpcError {
   const raw = value instanceof Error ? value.message : String(value ?? '');
-  const matched = /^\[([A-Z_]+)\]\s?([\s\S]*)$/.exec(raw);
+  // detail 只允许大写字母与下划线（枚举形态），避免把 message 里恰好出现的
+  // `[FOO: bar]` 误当成 detail。
+  const matched = /^\[([A-Z_]+)(?::([A-Z_]+))?\]\s?([\s\S]*)$/.exec(raw);
   const code = matched?.[1];
   if (code !== undefined && isIpcErrorCode(code)) {
-    return { code, message: matched?.[2] ?? '' };
+    const detail = matched?.[2];
+    const message = matched?.[3] ?? '';
+    return detail === undefined ? { code, message } : { code, message, detail };
   }
   return { code: 'UNKNOWN', message: raw };
 }

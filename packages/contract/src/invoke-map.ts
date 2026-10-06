@@ -26,6 +26,12 @@ export interface IpcInvokeMap {
 
   [IPC.systemInfo]: { req: void; res: SystemInfo };
   [IPC.windowOpen]: { req: { kind: WindowKind; payload?: unknown }; res: { windowId: number } };
+
+  [IPC.fsListDir]: { req: { workspaceId: string; path: string }; res: DirEntry[] };
+  [IPC.fsReadFile]: { req: { workspaceId: string; path: string }; res: { text: string; truncated: boolean } };
+  [IPC.fsWriteFile]: { req: { workspaceId: string; path: string; data: string }; res: void };
+  [IPC.fsStat]: { req: { workspaceId: string; path: string }; res: FileStat };
+  [IPC.agentControl]: { req: { runId: string; type: 'pause' | 'resume' }; res: void };
 }
 
 /** 走 invoke 的通道名（单向推送通道已被排除）。 */

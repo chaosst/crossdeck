@@ -33,6 +33,14 @@ export interface Usage {
   totalMs: number;
   /** 首 token 延迟，流式体验的关键指标 */
   ttftMs?: number;
+  /**
+   * 流控健康度：因消费端跟不上而**合并中间态**的次数（M4 背压）。
+   *
+   * 正常情况下恒为 0。非 0 说明 renderer 那一侧已经开始跟不上推送速率，
+   * 应当降频或减少渲染量 —— 关键是把"有点卡"变成**一个可观测的数字**，
+   * 而不是等用户来抱怨。可选：缺失不影响任何既有分支。
+   */
+  mergedChunks?: number;
 }
 
 export type ErrorCode =

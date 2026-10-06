@@ -25,6 +25,25 @@ export const IPC = {
   // ── 系统 ────────────────────────────────────────────────
   systemInfo: 'system:info',
   windowOpen: 'window:open',
+
+  // ── 文件系统（全部经 scope 校验，不接受绝对路径直通）────────
+  fsListDir: 'fs:list-dir',
+  fsReadFile: 'fs:read-file',
+  fsWriteFile: 'fs:write-file',
+  fsStat: 'fs:stat',
+  /**
+   * 单向推送（main → renderer），**不**走 invoke，故不进入 IpcInvokeMap。
+   *
+   * ⚠️ 状态：**已声明、未接线**。`FsPort.watch` 已有 Electron 实现，
+   *    但还没有任何地方往这条通道推事件，preload 也没暴露订阅入口。
+   *    刻意保留是因为它记录了下一条推送通道的形状；
+   *    `registeredChannels()` 取的是真实注册表，所以它不会被算进「已注册通道数」。
+   *    接线（或删除）留到 M4.5 与 fs 事件流一起做。
+   */
+  fsWatch: 'fs:watch',
+
+  // ── Agent 流控（背压，走 invoke 才有 ack 语义）─────────────
+  agentControl: 'agent:control',
 } as const;
 
 /** 全部通道名的联合类型。 */
