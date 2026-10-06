@@ -128,6 +128,33 @@ export function __caseG() {
 `,
     expect: /document|Cannot find name/i,
   },
+  {
+    id: 'H',
+    project: 'renderer',
+    what: 'renderer 调 fs 通道时少传 workspaceId（fs 通道的 req 契约强制要求归属，不许"默认当前工作区"）',
+    file: RENDERER_API,
+    append: `
+export function __caseH() {
+  return window.bridge.invoke(IPC.fsListDir, { path: '.' });
+}
+`,
+    expect: /workspaceId/,
+  },
+  {
+    id: 'I',
+    project: 'renderer',
+    what: 'fsStat 的 res 是完整 FileStat（res 存**最终值**而非 Promise；缺字段或误包一层都会在这里被拦住）',
+    file: RENDERER_API,
+    append: `
+export async function __caseI() {
+  const stat = await window.bridge.invoke(IPC.fsStat, { workspaceId: 'w', path: '.' });
+  const numeric: number = stat.size;
+  const badShape: typeof stat = { kind: 'file' };
+  return [numeric, badShape];
+}
+`,
+    expect: /size|mtimeMs/,
+  },
 ];
 
 /** 在进程内对指定项目做一次全量类型检查（连带检查 contract / core 源码）。 */
