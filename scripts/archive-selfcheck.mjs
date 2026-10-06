@@ -59,6 +59,28 @@ const summary = {
     unknownChannelRejected: report.probe?.unknownChannelThrew ?? null,
     consoleErrors: (report.consoleErrors ?? []).length,
   },
+  // ── M4：工作区 scope + 背压 + 渲染层可见化 ──
+  m4: {
+    workspaceGranted: (report.probe?.workspaceCount ?? 0) >= 1,
+    listDirEntries: report.probe?.scopeReadEntries ?? null,
+    escapeDeniedAs: report.probe?.scopeEscapeCode
+      ? `${report.probe.scopeEscapeCode}:${report.probe.scopeEscapeDetail}`
+      : null,
+    /** passed = 逃逸被拦；failed = 竟然读到了；skipped = 夹具没建出来（**不算通过**） */
+    symlinkEscape: report.probe?.scopeSymlinkCase ?? null,
+    symlinkFixture: report.scopeFixture?.symlink?.status ?? null,
+    fileTreeRenderedEntries: report.probe?.uiEntryCount ?? null,
+    escapeVisibleInUi: report.probe?.uiEscapeShown ?? null,
+    tokensWhilePaused: report.probe?.pausedTokenCount ?? null,
+    tokensWhilePausedLater: report.probe?.pausedTokenCountLater ?? null,
+    pausedReallyStoppedPush:
+      report.probe?.pausedTokenCount !== undefined &&
+      report.probe?.pausedTokenCount === report.probe?.pausedTokenCountLater,
+    tokensAfterResume: report.probe?.resumeTokenCount ?? null,
+    unknownRunRejectedAs: report.probe?.controlUnknownCode ?? null,
+  },
+  /** 不判失败、但必须被看见的事项（例如平台不允许建 symlink） */
+  warnings: report.warnings ?? [],
   failures: report.failures,
   reportFile: `docs/evidence/${reportName}`,
   screenshotFile: shotName ? `docs/evidence/${shotName}` : null,

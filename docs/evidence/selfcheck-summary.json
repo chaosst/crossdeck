@@ -1,22 +1,41 @@
 {
-  "updatedAt": "2026-09-30T19:08:54.697Z",
-  "mode": "prod",
+  "updatedAt": "2026-10-05T13:43:26.091Z",
+  "mode": "dev",
   "ok": true,
   "electron": "44.4.5",
   "chrome": "152.0.7977.130",
   "node": "24.21.0",
-  "registeredChannelCount": 10,
+  "registeredChannelCount": 15,
   "assertionSummary": {
     "bridgeMounted": true,
     "systemInfoOk": true,
     "errorCodePreservedAs": "NOT_FOUND",
-    "streamEvents": 31,
+    "streamEvents": 32,
     "streamEndedWithDone": true,
     "streamUnsubscribeWorks": true,
     "unknownChannelRejected": true,
     "consoleErrors": 0
   },
+  "m4": {
+    "workspaceGranted": true,
+    "listDirEntries": [
+      "hello.txt",
+      "link-out",
+      "notes"
+    ],
+    "escapeDeniedAs": "SCOPE_DENIED:OUT_OF_SCOPE",
+    "symlinkEscape": "passed",
+    "symlinkFixture": "ok",
+    "fileTreeRenderedEntries": 3,
+    "escapeVisibleInUi": true,
+    "tokensWhilePaused": 0,
+    "tokensWhilePausedLater": 0,
+    "pausedReallyStoppedPush": true,
+    "tokensAfterResume": 1,
+    "unknownRunRejectedAs": "NOT_FOUND"
+  },
+  "warnings": [],
   "failures": [],
-  "reportFile": "docs/evidence/selfcheck-prod.json",
-  "screenshotFile": "docs/evidence/window-prod.png"
+  "reportFile": "docs/evidence/selfcheck-dev.json",
+  "screenshotFile": "docs/evidence/window-dev.png"
 }

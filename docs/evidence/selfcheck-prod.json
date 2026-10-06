@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "ranAt": "2026-09-30T19:08:54.697Z",
+  "ranAt": "2026-10-05T13:42:34.516Z",
   "mode": "prod",
   "versions": {
     "electron": "44.4.5",
@@ -9,7 +9,7 @@
     "app": "0.0.0",
     "v8": "15.2.124.28-electron.0"
   },
-  "registeredChannelCount": 10,
+  "registeredChannelCount": 15,
   "registeredChannels": [
     "system:info",
     "window:open",
@@ -18,10 +18,24 @@
     "session:delete",
     "agent:run",
     "agent:abort",
+    "agent:control",
     "workspace:list",
     "workspace:grant",
-    "workspace:revoke"
+    "workspace:revoke",
+    "fs:list-dir",
+    "fs:read-file",
+    "fs:write-file",
+    "fs:stat"
   ],
+  "scopeFixture": {
+    "root": "D:\\develop\\crossdeck\\packages\\shell-electron\\dist\\selfcheck\\ws",
+    "symlink": {
+      "status": "ok",
+      "name": "link-out",
+      "reason": null
+    },
+    "outsideFile": "D:\\develop\\crossdeck\\packages\\shell-electron\\dist\\selfcheck\\outside\\secret.txt"
+  },
   "probe": {
     "hasBridge": true,
     "bridgeMethods": [
@@ -52,10 +66,11 @@
     "errorOwnProps": [],
     "unknownChannelThrew": true,
     "unknownChannelMessage": "Error invoking remote method 'no:such:channel': Error: No handler registered for 'no:such:channel'",
-    "streamRunId": "run_muohay69_bx3a",
+    "streamRunId": "run_muvauiox_5n7d",
     "streamEnded": true,
     "streamEventTypes": [
       "start",
+      "token",
       "token",
       "token",
       "token",
@@ -89,19 +104,45 @@
     ],
     "streamFirstEvent": "start",
     "streamLastEvent": "done",
-    "streamTokenCount": 29,
-    "streamTextLength": 86,
+    "streamTokenCount": 30,
+    "streamTextLength": 125,
     "streamUsage": {
       "promptTokens": 4,
-      "completionTokens": 86,
-      "totalMs": 930,
-      "ttftMs": 28
+      "completionTokens": 125,
+      "totalMs": 673,
+      "mergedChunks": 0,
+      "ttftMs": 19
     },
     "streamSecondEnded": true,
     "streamUnsubscribeWorks": true,
+    "workspaceCount": 1,
+    "scopeReadEntries": [
+      "hello.txt",
+      "link-out",
+      "notes"
+    ],
+    "scopeReadOk": true,
+    "scopeEscapeThrew": true,
+    "scopeEscapeCode": "SCOPE_DENIED",
+    "scopeEscapeDetail": "OUT_OF_SCOPE",
+    "scopeSymlinkCase": "passed",
+    "scopeSymlinkDetail": "SCOPE_DENIED:ESCAPE_ATTEMPT",
+    "pausedTokenCount": 0,
+    "pausedTokenCountLater": 0,
+    "backpressureEnded": true,
+    "resumeTokenCount": 1,
+    "backpressureTextLength": 125,
+    "backpressureMerged": 0,
+    "controlUnknownThrew": true,
+    "controlUnknownCode": "NOT_FOUND",
+    "uiEntryCount": 3,
+    "uiEmptyNotice": false,
+    "uiEscapeClicked": true,
+    "uiEscapeShown": true,
     "domStatus": "ready",
-    "domText": "crossdeck\n一个平台无关的 core · 多端壳\nmain 窗口\n链路已就绪\n系统信息 · 来自 main 进程的真实探测\nPLATFORM\nelectron\nAPPVERSION\n0.0.0\nLOCALE\nzh-CN\nOSVERSION\nwin32 10.0.26200 (x64)\nCAPABILITIES（CORE 做 UI 降级的唯一依据）\nfs.scope\nwindow.multi\nshortcut.global\nupdate.auto\ntray\nnotify.system\n会话\n新建会话\n新开一个窗口\n\n还没有会话。点「新建会话」——它由 core 的 SessionStore 创建，不经过任何平台 API。\n\n流式通道\n发送\n\n`agent:stream` 是不走 invoke 的单向推送通道。当前内容由 main 的脚本化运行时逐块推送， M3 会换成真正接 core Agent 内核的调用 —— 事件类型不变。\n\n这是 crossdeck 的流式通道自检输出：main 进程逐块推送，renderer 逐块累积。它证明了三件事——单向推送通道可用、事件类型跨进程保真、中断可以被观察到。\n状态：空闲\n首 token 28ms · 共 932ms · 86 token"
+    "domText": "crossdeck\n一个平台无关的 core · 多端壳\nmain 窗口\n链路已就绪\n系统信息 · 来自 main 进程的真实探测\nPLATFORM\nelectron\nAPPVERSION\n0.0.0\nLOCALE\nzh-CN\nOSVERSION\nwin32 10.0.26200 (x64)\nCAPABILITIES（CORE 做 UI 降级的唯一依据）\nfs.scope\nwindow.multi\nshortcut.global\nupdate.auto\ntray\nnotify.system\n会话\n新建会话\n新开一个窗口\n\n还没有会话。点「新建会话」——它由 core 的 SessionStore 创建，不经过任何平台 API。\n\n工作区 · 本地文件访问的边界\n授权目录…\n试读 ../\n\n所有 fs 通道都必须带上 workspaceId。core 的 PathGuard 做归一化 → 最长 root 前缀匹配 → 限定工作区 → symlink 逃逸校验；越界一律拒绝，而不是静默返回空。\n\nro · D:/develop/crossdeck/packages/shell-electron/dist/selfcheck/ws\n（工作区根）\nDIRECTORY\nnotes\n0\nFILE\nhello.txt\n24\nSYMLINK\nlink-out\n21\n[SCOPE_DENIED:OUT_OF_SCOPE] 目标路径不在已授权的工作区之内\n（detail=OUT_OF_SCOPE）—— 这是预期的拒绝。\n流式通道\n暂停\n发送\n\n`agent:stream` 是不走 invoke 的单向推送通道。产字与推字解耦：上游每 12ms 产一批字进队列， 下游每 16ms flush 一次（对齐一帧）；队列超 2000 字符时合并中间态而非丢尾部。 暂停走反向通道 `agent:control`（invoke，有 ack），暂停期间**零推送**。\n\n这是 crossdeck 的流式通道自检输出：main 侧按 16ms 一帧批量 flush，renderer 逐帧累积。这段文本同时用来验证三件事——单向推送通道可用、事件类型跨进程保真、以及暂停/恢复真的能卡住下行流量（而不是\"看起来变慢了\"）。\n状态：空闲\n首 token 832ms · 共 848ms · 125 token"
   },
+  "warnings": [],
   "consoleErrors": [],
   "screenshot": "D:\\develop\\crossdeck\\packages\\shell-electron\\dist\\selfcheck\\window.png",
   "failures": []
