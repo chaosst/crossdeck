@@ -30,3 +30,4 @@ export * from './agent/backpressure.js';
 export * from './agent/tools.js';
 export * from './agent/model.js';
 export * from './agent/runtime.js';
+export * from './update/version.js';
