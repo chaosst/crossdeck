@@ -19,10 +19,14 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
 
 - **Core 层零平台 API**，由可执行脚本强制（`pnpm verify:core-purity`），不靠自觉
 - **依赖倒置**：所有平台能力经 `CapabilityPort` 接口注入，core 不认平台名，只认能力
+- **Web 壳当试金石**：`packages/shell-web` 在浏览器里跑**同一份** core。
+  它的 tsconfig `types: []`、Vite 不为 node 内置模块兜底 —— 于是
+  「core 里还藏着平台假设吗？」变成一个**编译期就能回答**的问题。
+  能编译、能打包、能跑（`pnpm selfcheck:web`，59 条断言 + 截图）⇒ 不是口号
 - **类型安全 IPC**：`main` / `preload` / `renderer` 三处共享 `IpcInvokeMap`，
-  改错通道名或请求形状会在**编译期**报错（9 个负例证明，见下）
-- **跨环境类型隔离**：main 项目的 `lib` 里没有 DOM、renderer 项目的 `types` 是空的 ——
-  渲染层想 `import 'node:fs'`、主进程想用 `document` 都会编译失败
+  改错通道名或请求形状会在**编译期**报错（11 个负例证明，见下）
+- **跨环境类型隔离**：main 项目的 `lib` 里没有 DOM、renderer 项目的 `types` 是空的、
+  Web 壳两者都没有只留 DOM —— 负例 F / G / J / K 就是这三条边界的验收
 - **能力探测优于平台判断**：core 用 `capabilities.has('shortcut.global')` 决定 UI，
   而不是 `if (platform === 'electron')`
 - **工作区 scope 模型**：Agent 要读用户的真实目录，就必须有边界 ——
@@ -30,6 +34,8 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
   （`SCOPE_DENIED:OUT_OF_SCOPE`，不是笼统的 `FORBIDDEN`）
 - **流式背压**：产字与推字解耦，按帧 flush，队列超限**合并中间态**而非丢尾部，
   暂停期间零推送（反向通道走 invoke 才有 ack）
+- **调度器注入**：core 里没有 `setInterval` / `Date.now`，只有 `AgentDeps.every/now/newId`。
+  收益不是"看起来优雅"，而是背压可以**逐帧确定性验证** —— 83 条断言、全程 0ms 真实等待
 
 ---
 
@@ -43,8 +49,9 @@ pnpm setup:electron
 
 pnpm dev          # 开发：内嵌 Vite（HMR）+ Electron，只有一个进程
 pnpm start        # 生产：跑 dist/ 里的真实产物
-pnpm verify       # 全量校验：类型检查 + core 纯度 + IPC 负例 + scope 单测
+pnpm verify       # 全量校验：类型检查 + core 纯度 + IPC 负例 + scope/agent 单测
 pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
+pnpm selfcheck:web  # Web 壳（试金石）端到端自检：真开一个 Chromium 跑同一份 core
 ```
 
 ### 各命令实际做了什么
@@ -53,8 +60,10 @@ pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 |---|---|
 | `pnpm dev` | esbuild 打 main/preload → Electron 主进程**内嵌启动 Vite** → 加载 dev server |
 | `pnpm start` | 全量构建（含 renderer）→ 通过自称协议 `app://` 加载产物 |
-| `pnpm verify` | `tsc -b` → core 铁律扫描 → 9 个类型负例 → 72 条 scope 断言 |
+| `pnpm dev:web` | 单独的 Vite dev server（:5199）—— core 在浏览器里跑，不需要 Electron |
+| `pnpm verify` | `tsc -b` → core 铁律扫描 → 11 个类型负例 → 72 条 scope 断言 → 83 条 agent 断言 |
 | `pnpm selfcheck` | 启动应用 → 真实上下文探针 → 截图 → 写报告 → 归档到 `docs/evidence/` |
+| `pnpm selfcheck:web` | Vite 构建 → 起静态服务 → 无头 Chromium 走 CDP → 页面内跑 59 条断言 → 截图归档 |
 
 > **受限环境下跑自检**：若本机 Chromium 沙箱起不来 viz 层（表现为
 > `GPU process isn't usable. Goodbye.`，退出码 3），可以显式降级：
@@ -65,7 +74,7 @@ pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 
 ## 验证：凭什么说它是成立的
 
-### 1. 类型安全 IPC（`pnpm verify:ipc`，9/9 通过）
+### 1. 类型安全 IPC 与跨环境边界（`pnpm verify:ipc`，11/11 通过）
 
 只跑正例是不够的 —— 一个把类型写成 `any` 的项目同样能通过正例。
 所以要证明**写错会被挡住**：
@@ -81,9 +90,15 @@ pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 | G | 主进程使用 `document`（main 项目的 lib 里没有 DOM） | 拦住 |
 | H | renderer 调 fs 通道时少传 `workspaceId` | 拦住 |
 | I | 把 fs 通道的 `res` 当残缺类型用（`res` 存的是**最终值**，不是 `Promise`） | 拦住 |
+| **J** | **Web 壳（试金石）`import 'node:fs'`** | 拦住 |
+| **K** | **Web 壳读 `process.env`** | 拦住 |
 
 做法不是跑 `tsc` 子进程，而是用 Compiler API 在进程内检查 ——
-所以每个负例都能**落在它所属的 tsconfig 项目里**验证，跨环境的越界引用（F/G）才抓得住。
+所以每个负例都能**落在它所属的 tsconfig 项目里**验证，跨环境的越界引用（F/G/J/K）才抓得住。
+
+J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境**里，
+而这个环境恰好是「core 无平台假设」这条论断唯一的执行者。它一旦失守，
+整条立论就没有证据了。
 
 ### 2. Core 铁律（`pnpm verify:core-purity`）
 
@@ -136,6 +151,61 @@ pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 | `resume` 之后 token 必须增加 | 暂停不能把流卡死 |
 | `agent:control` 对不存在的 runId 必须抛 `NOT_FOUND` | 静默成功会让 UI 状态与真实状态不一致 |
 | 渲染层控制台零错误 | 白屏类问题的最直接信号 |
+
+### 5. Agent 内核的确定性单测（`pnpm verify:agent`，83/83 通过）
+
+这个脚本存在的唯一理由：把「跑一遍端到端、等几秒、看 token 数对不对」
+换成可以精确到**第 N 帧推了什么**的断言。
+
+时间由 `advance(ms)` 手动推进，两次 produce（12ms）与两次 flush（16ms）
+的先后顺序完全确定，所以能测出端到端测不到的东西：
+
+| 断言 | 端到端为什么测不了 |
+|---|---|
+| 暂停期间**零推送**（不是"少推送"） | 端到端只能对比两段等长的时间窗，撞不上就漏 |
+| 队列越限后**保留头尾**（用可辨识内容断言，不是断言长度） | 长度断言抓不住"丢头部"——丢弃后队列会重新增长，长度照样越线 |
+| `ttftMs` 恰好等于 16ms | 真实定时器下有抖动，只能写 `> 0` |
+| 收尾后调度全部摘掉（定时器泄漏） | 泄漏的定时器不会崩，只会"偶尔多一个 token" |
+| 工具失败的语义是 `tool_end.ok=false`，不把 run 打挂 | 同上 |
+
+**这套断言也被验证过**：`isWithinPath` 改成朴素 `startsWith` 挂 4 条、
+`PathGuard.check` 无条件放行挂 17 条、
+`publish` 不先快照挂 1 条、队列超限只留尾部挂 1 条。
+
+有一条**坏消息**也写在了脚本头部：`AgentRuntime.#settle` 的重复终结保护
+在现有调用方下**不可达**（变异存活 0 条），所以不能假装它被测到了。
+
+### 6. Web 壳端到端自检（`pnpm selfcheck:web`，59/59 通过）
+
+这是「core 平台无关」这条论断的**运行时**证据 —— 编译通过只证明静态层面，
+证明不了它真能跑。产物在 `docs/evidence/`：`web-selfcheck.json`、`web-shell.png`。
+
+零依赖：静态服务器用 `node:http` 手写，CDP 走 Node 内建的 WebSocket，
+浏览器用系统已有的 Edge / Chrome。引 puppeteer 当然更省事，
+但那样"证明 core 无平台假设"的脚本自己先拖进来两百兆，说服力会打折。
+
+| 类别 | 断言 |
+|---|---|
+| 能力**如实降级** | `fs.scope` 在；`window.multi` / `shortcut.global` / `tray` / `update.auto` **明确不在**（假实现比没有实现更糟） |
+| 能力探测是运行时读的 | `has('fs.scope') === (typeof navigator.storage.getDirectory === 'function')` |
+| scope 仍成立 | 正向可读；`NO_WORKSPACE` 与 `OUT_OF_SCOPE` 必须可区分 |
+| **前缀陷阱** | `/ws/demo` 的授权不得顺带覆盖 `/ws/demo-sibling` |
+| **跨工作区双向** | A → B 与 B → A 都要被拒（`withinWorkspaceId` 真的生效） |
+| 条目路径 | 必须是工作区**相对**路径 —— 证明 fs 端口与授权表共用同一个 store |
+| 内核流式 | `start → token×33 → done`，`completionTokens` 与文本长度一致 |
+| 背压（真实定时器） | 暂停 400ms 计数 **1 → 1**，恢复后 **1 → 7** 且正常收尾 |
+| **注入式调度在浏览器也成立** | 假调度器 + `BackpressurePump`：暂停期间零推送 |
+| 工具链路 | `start → tool → tool_end → token* → done` |
+| **真实 UI 点击** | 点「授权」→ 文件树有 2 条；点「试读 ../」→ 界面上出现 `SCOPE_DENIED:OUT_OF_SCOPE` |
+| core 导出核验 | 页面报上来的绑定名，由运行器 import `core/dist` 逐个核对（压缩会把 `.name` 改成单字母，所以这条只能在 Node 侧做） |
+
+**变异测试**（三组，各自挂的正是对应的那条断言）：
+
+| 变异 | 挂掉的断言 |
+|---|---|
+| `resolveInWorkspace` 不带 `withinWorkspaceId` | `scope.prefixTrapDenied` + `scope.crossWorkspaceDeniedBothWays` |
+| UI 只显示原因、隐去错误码 | `ui.escapeDenialVisible` |
+| `AgentRuntime.pause` 变成空操作 | `backpressure.pauseFreezesStream` |
 
 ---
 
@@ -197,6 +267,19 @@ packages/
       fs/posixPath.ts    #   POSIX 风格纯字符串路径运算（不用 node:path）
       fs/workspaceStore.ts # 授权表 + 归属判定（最长 root 匹配）
       fs/pathGuard.ts    #   scope 校验：归一化 → 归属 → symlink 逃逸
+      fs/resolveInWorkspace.ts # { workspaceId, rel } → 已授权绝对路径（两端共用）
+      events/streamBus.ts #  事件分发 + 退订（刻意不用 EventEmitter）
+      agent/deps.ts      #   注入面：now / every / newId（core 里没有 setInterval）
+      agent/backpressure.ts # 下行背压泵：产字↔推字解耦、帧对齐、合并中间态
+      agent/tools.ts     #   工具注册表（工具失败是业务结果，不是崩溃）
+      agent/model.ts     #   ModelPort + ScriptedModel（未接真 LLM 时的确定性替身）
+      agent/runtime.ts   #   run 生命周期：恰好一个终态事件
+  shell-web/             #   ★ 试金石：同一份 core 跑在浏览器里
+    src/ports.ts         #     OPFS 实现（无 symlink → 逃逸检测退化为纯字符串）
+    src/selfcheck.ts     #     59 条断言（能力降级 / scope / 内核 / 真实 UI 点击）
+    src/main.ts          #     极简 DOM 壳，刻意不引框架
+    tsconfig.json        #     lib=DOM+AsyncIterable，types=[] —— 铁律的机制本身
+    scripts/web-selfcheck.mjs # 静态服务 + CDP 驱动无头 Chromium（零依赖）
   shell-electron/
     src/main/            #   主进程：core 宿主 + 系统能力实现
       index.ts           #     启动顺序 + 模式选择
@@ -205,7 +288,7 @@ packages/
       ipc.ts             #     ipcMain.handle 类型安全包装 + 错误信封
       handlers.ts        #     全部 handler（只做"翻译"，不做业务）
       fs.ts              #     FsPort 的 Electron 实现（**校验先于 IO**）
-      agentRuntime.ts    #     脚本化流式运行时 + 下行背压（M4.5 换成真实内核）
+      agentRuntime.ts    #     适配器：core 内核 → Electron（真正属于壳的只剩三行）
       devServer.ts       #     内嵌 Vite（仅 --dev 动态导入）
       selfcheck.ts       #     端到端自检（夹具 + 探针 + 截图 + 报告）
     src/preload/bridge.ts#   最小暴露面（必须是 CJS）
@@ -214,10 +297,11 @@ packages/
     tsconfig.main.json   #   lib=ES2022 + types=[node]（没有 DOM）
     tsconfig.renderer.json #  lib=ES2022+DOM + types=[]（没有 node）
 scripts/
-  verify-type-alignment.mjs  # 类型安全 IPC 的 9 个负例
+  verify-type-alignment.mjs  # 11 个类型负例（三个 tsconfig 项目各覆盖到）
   verify-core-purity.mjs     # core 铁律扫描
   verify-core-scope.mjs      # PathGuard / WorkspaceStore 的 72 条断言（加载 core 编译产物）
-  archive-selfcheck.mjs      # 自检证据归档
+  verify-core-agent.mjs      # 事件总线 / 背压 / 工具链路的 83 条断言（假调度器，0ms 真实等待）
+  archive-selfcheck.mjs      # Electron 自检证据归档
 docs/evidence/               # 自检报告与截图（可核验产物）
 ```
 
@@ -332,19 +416,74 @@ UI 需要区分两件事，而它们该引导用户做的动作完全不同：
 理由：直接往授权表里塞一条会让自检去验证一条**用户永远走不到的分支** ——
 测试通过，真实路径照样坏。
 
+### 为什么用 Web 壳当试金石（而不是"顺手也做一个 Web 版"）
+
+「core 平台无关」这句话，如果只写在文档里，它和没写是一样的 ——
+没人能证伪，也就没人会去维护。所以需要一个**机器可验**的判据：
+
+- `shell-web/tsconfig.json` 把 `types` 置空 → 这个项目拿不到任何 node 全局类型
+- 它用 Vite 做浏览器构建 → `node:*` 根本没有解析目标
+
+于是「core 里还藏着平台假设吗」变成一个编译期就能回答的问题：
+core 只要有一处依赖 node，这个壳就**编译不过**。
+
+但编译通过仍然只是静态证据。所以它还必须**真的跑起来**：
+`pnpm selfcheck:web` 会起一个静态服务、开一个无头 Chromium、在页面里跑 59 条断言。
+两件事都成立，这句话才算被验证过 —— 而不是被宣布过。
+
+顺带一个副产品：Web 壳要复用「把 `{workspaceId, rel}` 解析成已授权绝对路径」这段逻辑时，
+摆在面前的是"抄一份"或"下沉到 core"。**抄一份的代价不是多写 15 行，而是两端的授权语义
+从此可能走散** —— 某天有人在 Electron 那份里加了「只读工作区不许写」，Web 那份不会跟着变，
+而这是安全代码。所以它成了 `core/src/fs/resolveInWorkspace.ts`。
+
+### 为什么把调度器注入 core，而不是直接用 `setInterval`
+
+core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是自律，是编译不过。
+所以时间与调度必须由壳注入：`AgentDeps.every / now / newId`。
+
+收益不是"看起来优雅"，而是**可确定性测试**：测试注入一个手动推进的 `every()`，
+就能在没有一个真实定时器的情况下，把背压算法逐帧验完 ——
+见 `scripts/verify-core-agent.mjs`，83 条断言、全程 0ms 真实等待。
+
+反过来说：如果哪天有人为了"方便"在 core 里直接写 `setInterval`，
+背压就会退化回"只能靠端到端碰运气验"。
+
+这条设计还有个自我验证：`shell-web` 的自检里**又建了一个假调度器**
+（`src/selfcheck.ts` 的 `fakeScheduler`）。目的就是证明这套做法本身与平台无关 ——
+如果"可确定性测试"依赖 Node 的某种特性，它就不是平台无关的。
+
+### 为什么 `agent:abort` 抛错，而 `agent:control` 会抛 `NOT_FOUND`
+
+两者看着像同一类操作，语义却相反：
+
+- `agent:control`（pause / resume）—— **静默成功会撒谎**。run 早就结束了，
+  却回一句"成功"，UI 就停在"已暂停"上，与真实状态不一致。所以必须失败。
+- `agent:abort` —— run 已经不跑了，**目标已经达成**就是成功。
+  抛错反而会在"点停止时刚好跑完"这个常见竞态上弹出莫名的错误。
+
 ---
 
 ## 平台能力对照
 
+这张表不是设想，是 `shell-web` 的实际输出（`docs/evidence/web-selfcheck.json` 的
+`detectedCapabilities`）：Web 壳在**运行时探测**能力，探测不到就如实报「没有」。
+
 | 能力 | Web 壳 | Electron 壳 | HarmonyOS 壳 |
 |---|---|---|---|
-| 文件读写 | OPFS / File System Access API | `node:fs` + scope 授权 | `@ohos.file.fs` |
-| 目录选择 | `<input webkitdirectory>` | `dialog.showOpenDialog` | `picker` |
-| 多窗口 | `window.open` | `BrowserWindow` 多实例 | 自由窗口 / 子窗口 |
-| 系统通知 | Notification API | `new Notification()` | `notificationManager` |
-| 剪贴板 | Clipboard API | `clipboard` | `pasteboard` |
-| 全局快捷键 | ❌ 降级为页面内快捷键 | `globalShortcut` | 系统级按键 |
-| 自动更新 | ❌ 不适用 | `electron-updater` | 应用市场 |
+| `fs.scope` 文件读写 | ✅ OPFS / File System Access API | ✅ `node:fs` + scope 授权 | `@ohos.file.fs` |
+| `notify.system` 系统通知 | ⚠️ 有，但先要用户授权 | `new Notification()` | `notificationManager` |
+| `window.multi` 多窗口 | ❌ 只有页面内面板 | ✅ `BrowserWindow` 多实例 | 自由窗口 / 子窗口 |
+| `shortcut.global` 全局快捷键 | ❌ 网页不允许注册 | ✅ `globalShortcut` | 系统级按键 |
+| `update.auto` 自动更新 | ❌ 刷新即最新 | `electron-updater` | 应用市场 |
+| `tray` 托盘 | ❌ 不存在 | `Tray` | — |
+
+三条硬事实：
+
+1. **不装假实现。** 一个把能力表填满的 Web 壳看起来更"完整"，但 UI 会据此渲染出
+   永远点不动的按钮 —— 假实现比没有实现更糟。
+2. **能力探测先于调用**，不是先调用再兜底。UI 少渲染一块，是设计结果而不是降级事故。
+3. **差异文档化，不做"假装统一的抽象"。** `window.multi` 在 Web 壳里返回面板 id 而不是抛错，
+   但 `has('window.multi')` 是 `false` —— 调用方本来就该先探测再决定要不要显示"新建窗口"。
 
 这张表本身就是一个结论：**一套 core 不是所有端都能 100% 复用**。
 边界在哪里、怎么降级，才是架构判断力的体现。
@@ -355,11 +494,15 @@ UI 需要区分两件事，而它们该引导用户做的动作完全不同：
 
 - [x] **M0** — pnpm workspace 骨架 + `packages/contract` 全量类型 + 类型对齐负例
 - [x] **M2** — Electron 主进程骨架 + 全通道实现 + `app://` 协议 + 安全基线
-- [x] **M3(部分)** — React 19 渲染层 + 流式通道端到端打通（Agent 内核仍为脚本化运行时）
+- [x] **M3** — React 19 渲染层 + 流式通道端到端打通
 - [x] **M4** — 本地文件系统 + 工作区授权 scope（WorkspaceStore / PathGuard / symlink 逃逸）
       + 流式下行背压（按帧 flush + 合并中间态 + 暂停零推送）
-- [ ] **M1** — 从 navigate 抽取 core（agent / events）+ ESLint 规则
-- [ ] **M4.5** — 用真实 Agent 内核替换 `agentRuntime` 的脚本化实现
+- [x] **M4.5(a)** — core `agent/` + `events/` 内核：`AgentRuntime` / `BackpressurePump` /
+      `StreamBus` / `ToolRegistry`；调度器注入；壳侧只剩三行适配
+- [x] **M4.5(b)** — `shell-web` 试金石：同一份 core 在浏览器里编译、打包、运行，
+      59 条断言 + 截图归档
+- [ ] **M4.5(c)** — ESLint `no-restricted-imports` 把铁律提到编辑器即时反馈
+- [ ] **M1** — 从 navigate 抽取更多 core 模块（真实 LLM 适配层）
 - [ ] **M5** — 自动更新 + 三平台打包 + 性能量化（冷启动 / 内存基线）
 - [ ] **M6** — HarmonyOS 壳（ArkTS + 2in1 鸿蒙 PC 形态）
 
@@ -374,6 +517,8 @@ UI 需要区分两件事，而它们该引导用户做的动作完全不同：
 | 无头 / CI 下 `GPU process isn't usable`（退出码 3） | 受限会话里 Chromium 沙箱起不来 viz 层。自检已关 GPU；若仍崩，加 `--no-sandbox`（见下方说明） |
 | `pnpm selfcheck` 出完报告却不返回 | 同一原因：主进程卡在残留的 GPU/viz 子进程上，`app.exit()` 结束不掉。**这不该由应用自己救**（事件循环已停摆，兜底 `setTimeout` 不会触发）。所以 `launch.mjs` 监听应用的 `[selfcheck] DONE ok=… code=…` 哨兵，据此强杀进程树并以**判定结果**而不是"能不能退出"作为退出码 |
 | 白屏、控制台报 CSP 拦截 | 生产 CSP 的 `script-src` 只有 `'self'`。注意 Vite 的 modulepreload polyfill 会注入行内脚本，已在 `vite.config.ts` 关掉 |
+| `selfcheck:web` 报「找不到 Chromium 内核浏览器」 | 它只用系统已有的 Edge / Chrome。装在别处时用 `CROSSDECK_BROWSER=<路径>` 指定 |
+| `selfcheck:web` 的 OPFS 断言失败 | OPFS 需要**安全上下文**：只认 `https://` 或 `127.0.0.1` / `localhost`。脚本起的就是 `127.0.0.1` —— 换成局域网 IP 会失效 |
 
 ---
 
