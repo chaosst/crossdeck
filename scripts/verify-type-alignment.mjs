@@ -91,7 +91,7 @@ export function __caseC() {
     file: RENDERER_API,
     append: `
 export function __caseD() {
-  return window.bridge.onStream((e) => (e.type === 'token' ? e.name : ''));
+  return window.bridge.on(IPC.agentStream, (e) => (e.type === 'token' ? e.name : ''));
 }
 `,
     expect: /name/i,
@@ -184,6 +184,32 @@ export function __caseK() {
 }
 `,
     expect: /process|Cannot find name/i,
+  },
+  {
+    id: 'L',
+    project: 'renderer',
+    what: '把 invoke 通道传给 on()（推送与调用两张表必须互斥，否则一条通道会出现两种用法）',
+    file: RENDERER_API,
+    append: `
+export function __caseL() {
+  return window.bridge.on(IPC.updateCheck, () => {});
+}
+`,
+    expect: /update:check/,
+  },
+  {
+    id: 'M',
+    project: 'renderer',
+    what:
+      'UpdateStatus 判别联合 —— available 阶段访问 percent 必须报错。' +
+      '这条就是「永远转圈」的类型级拦截：没有进度数字的阶段，写不出一个带进度的 UI',
+    file: RENDERER_API,
+    append: `
+export function __caseM() {
+  return window.bridge.on(IPC.updateStatus, (s) => (s.stage === 'available' ? s.percent : 0));
+}
+`,
+    expect: /percent/,
   },
 ];
 

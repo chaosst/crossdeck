@@ -1,6 +1,7 @@
 import { IPC } from './ipc.js';
 import type { DirEntry, FileStat, SessionMeta, SystemInfo } from './entities.js';
 import type { WindowKind } from './capability.js';
+import type { UpdateInfo } from './update.js';
 import type { Workspace } from './workspace.js';
 
 /**
@@ -32,6 +33,17 @@ export interface IpcInvokeMap {
   [IPC.fsWriteFile]: { req: { workspaceId: string; path: string; data: string }; res: void };
   [IPC.fsStat]: { req: { workspaceId: string; path: string }; res: FileStat };
   [IPC.agentControl]: { req: { runId: string; type: 'pause' | 'resume' }; res: void };
+
+  /**
+   * 检查更新。**已是最新返回 null** —— 空结果的语义就是"没有可装的新版本"。
+   *
+   * 检查失败（feed 不可达 / feed 给了畸形版本号）走抛错，
+   * 与"查到了、只是没有新版"分成两条路 —— 前者要提示用户，后者不该提示。
+   */
+  [IPC.updateCheck]: { req: void; res: UpdateInfo | null };
+  /** 开始下载。真正的进度经 updateStatus 推送，这里只回"已受理"。 */
+  [IPC.updateDownload]: { req: void; res: void };
+  [IPC.updateInstall]: { req: void; res: void };
 }
 
 /** 走 invoke 的通道名（单向推送通道已被排除）。 */

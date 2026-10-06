@@ -1,5 +1,5 @@
 import type { IpcInvokeMap, InvokeChannel } from './invoke-map.js';
-import type { AgentStreamEvent } from './stream.js';
+import type { PushChannel, PushPayload } from './push-map.js';
 
 /**
  * handler 上下文 —— main 侧每个 handler 都能拿到。
@@ -34,6 +34,9 @@ export type InvokeArgs<K extends InvokeChannel> =
  *
  * 注意：这里是**纯类型**。真正的 contextBridge.exposeInMainWorld 调用
  * 必须写在 preload 里（那里才能 import electron）。
+ *
+ * 暴露面刻意只有两个方法 —— invoke 与 on。宁可泛型化，也不随通道数量增长：
+ * 每多一个 `onXxx()` 都要多一条 preload 白名单，而白名单是越短越安全的东西。
  */
 export interface BridgeApi {
   invoke<K extends InvokeChannel>(
@@ -41,6 +44,15 @@ export interface BridgeApi {
     ...args: InvokeArgs<K>
   ): Promise<IpcInvokeMap[K]['res']>;
 
-  /** 订阅流式事件，返回取消订阅函数 */
-  onStream(handler: (event: AgentStreamEvent) => void): () => void;
+  /**
+   * 订阅某条推送通道，返回**取消订阅函数**。
+   *
+   * 不返回取消函数是流式 UI 最典型的泄漏形态：React 组件每次挂载都会多留一个
+   * 监听器，表现为「同一条流被渲染 N 次」，而组件已经卸载了。
+   * 所以这里把"必须能退订"写进签名，而不是写进注释。
+   */
+  on<K extends PushChannel>(
+    channel: K,
+    handler: (payload: PushPayload<K>) => void,
+  ): () => void;
 }

@@ -44,6 +44,19 @@ export const IPC = {
 
   // ── Agent 流控（背压，走 invoke 才有 ack 语义）─────────────
   agentControl: 'agent:control',
+
+  // ── 自动更新 ────────────────────────────────────────────
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  /** 重启并安装。这是唯一"调用后进程会消失"的通道，调用侧不要 await 它再做事。 */
+  updateInstall: 'update:install',
+  /**
+   * 单向推送（main → renderer），**不**走 invoke。
+   *
+   * 进度必须推：否则下载几十兆的这段时间里，用户面对的只是一个点了没反应的按钮。
+   * 载荷见 update.ts 的 `UpdateStatus`。
+   */
+  updateStatus: 'update:status',
 } as const;
 
 /** 全部通道名的联合类型。 */

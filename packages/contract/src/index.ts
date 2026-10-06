@@ -12,6 +12,8 @@ export * from './ipc.js';
 export * from './entities.js';
 export * from './stream.js';
 export * from './invoke-map.js';
+export * from './push-map.js';
 export * from './types.js';
 export * from './workspace.js';
+export * from './update.js';
 export * from './error.js';

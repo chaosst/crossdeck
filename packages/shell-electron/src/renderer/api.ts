@@ -118,7 +118,7 @@ export function attachStreamRenderer(
   onToken: (text: string) => void,
   onToolStart: (name: string) => void,
 ): () => void {
-  return window.bridge.onStream((event) => {
+  return window.bridge.on(IPC.agentStream, (event) => {
     switch (event.type) {
       case 'token':
         onToken(event.text);
@@ -138,5 +138,5 @@ export function attachStreamRenderer(
 
 /** 订阅原始事件流（App 用这个，需要看到全部事件类型）。 */
 export function onAgentEvent(handler: (event: AgentStreamEvent) => void): () => void {
-  return window.bridge.onStream(handler);
+  return window.bridge.on(IPC.agentStream, handler);
 }

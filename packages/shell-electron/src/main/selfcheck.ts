@@ -284,7 +284,7 @@ function buildProbeScript(fixture: ScopeFixture): string {
 
   // A：订阅 → 跑 → 收全 → 退订
   const evA = [];
-  const offA = window.bridge.onStream((e) => evA.push(e));
+  const offA = window.bridge.on('agent:stream', (e) => evA.push(e));
   let runA = null;
   try {
     runA = await runOnce('selfcheck-A');
@@ -308,7 +308,7 @@ function buildProbeScript(fixture: ScopeFixture): string {
 
   // B：A 退订后再跑一次 —— 若退订无效，evA 会继续增长（监听器泄漏）
   const evB = [];
-  const offB = window.bridge.onStream((e) => evB.push(e));
+  const offB = window.bridge.on('agent:stream', (e) => evB.push(e));
   try {
     await runOnce('selfcheck-B');
     out.streamSecondEnded = await waitEnd(evB, 12000);
@@ -374,7 +374,7 @@ function buildProbeScript(fixture: ScopeFixture): string {
   // M4 ②：背压 —— 暂停期间**一个 token 都不能送出来**
   // ─────────────────────────────────────────────────────────────
   const bpEv = [];
-  const offBp = window.bridge.onStream((e) => bpEv.push(e));
+  const offBp = window.bridge.on('agent:stream', (e) => bpEv.push(e));
   try {
     const created = await window.bridge.invoke('session:create', { title: 'selfcheck-backpressure' });
     const started = await window.bridge.invoke('agent:run', { sessionId: created.id, input: 'backpressure-probe' });
@@ -417,7 +417,7 @@ function buildProbeScript(fixture: ScopeFixture): string {
   // 没有它，工具链路直到第一次接真模型之前都只是纸面设计。
   // ─────────────────────────────────────────────────────────────
   const toolEv = [];
-  const offTool = window.bridge.onStream((e) => toolEv.push(e));
+  const offTool = window.bridge.on('agent:stream', (e) => toolEv.push(e));
   try {
     const created = await window.bridge.invoke('session:create', { title: 'selfcheck-tool' });
     await window.bridge.invoke('agent:run', {
@@ -562,7 +562,7 @@ export async function runSelfCheck(
     if (!probe.streamUsage) failures.push('done 事件缺少 usage 统计');
     if (probe.streamSecondEnded !== true) failures.push('第二次流式运行未结束');
     if (probe.streamUnsubscribeWorks !== true) {
-      failures.push('onStream 退订无效 —— 监听器泄漏（同一条流会被渲染多次）');
+      failures.push("bridge.on('agent:stream') 退订无效 —— 监听器泄漏（同一条流会被渲染多次）");
     }
 
     // ── M4 ①：scope 授权（正向 + 两条反向）──
