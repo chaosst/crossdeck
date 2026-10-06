@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
 import { runtimeConfig } from './runtimeConfig.js';
 
 /**
@@ -147,6 +148,13 @@ export interface SelfCheckProbe {
   backpressureError?: string;
   controlUnknownThrew?: boolean;
   controlUnknownCode?: string | null;
+  // ── M4.5：core Agent 内核的工具链路（先干活再回答）──
+  toolRunEnded?: boolean;
+  toolEventCount?: number;
+  toolEndOk?: boolean | null;
+  toolBeforeToken?: boolean;
+  toolRunLastEvent?: string | null;
+  toolRunError?: string;
   // ── M4：渲染层文件树 + 越界可见化（驱动真实点击，让截图也成为证据）──
   uiEntryCount?: number;
   uiEmptyNotice?: boolean;
@@ -176,6 +184,18 @@ export interface SelfCheckReport {
     outsideFile: string;
   };
   probe: SelfCheckProbe;
+  /**
+   * Agent 内核的自查计数 —— 两个都应当恒为 0。
+   *
+   * 这两条断言的形状是"不变量"而不是"功能"：
+   * 它们不验证任何功能能跑，只验证**不该发生的事没发生**。
+   * 之所以必须有，是因为它们对应的 bug 都不崩、不报错，
+   * 只表现为"UI 停在最后一帧"或"偶尔多一个 token"，从日志里完全看不出来。
+   */
+  agentRuntime: {
+    droppedAfterTerminal: number;
+    undeliveredTerminal: number;
+  };
   /** 不判失败、但必须被看见的事项（例如平台不允许建 symlink） */
   warnings: string[];
   consoleErrors: string[];
@@ -391,6 +411,33 @@ function buildProbeScript(fixture: ScopeFixture): string {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // M4.5：core Agent 内核的工具链路 —— 事件序列应当是
+  //   start → tool → tool_end → token* → done
+  // 这一条走的是**真通道**：脚本模型按输入里的标记决定先调工具。
+  // 没有它，工具链路直到第一次接真模型之前都只是纸面设计。
+  // ─────────────────────────────────────────────────────────────
+  const toolEv = [];
+  const offTool = window.bridge.onStream((e) => toolEv.push(e));
+  try {
+    const created = await window.bridge.invoke('session:create', { title: 'selfcheck-tool' });
+    await window.bridge.invoke('agent:run', {
+      sessionId: created.id,
+      input: '请回声 [[tool:echo]] 你好',
+    });
+    out.toolRunEnded = await waitEnd(toolEv, 12000);
+    out.toolEventCount = toolEv.filter((e) => e.type === 'tool').length;
+    const te = toolEv.find((e) => e.type === 'tool_end');
+    out.toolEndOk = te ? te.ok : null;
+    const iTool = toolEv.findIndex((e) => e.type === 'tool');
+    const iToken = toolEv.findIndex((e) => e.type === 'token');
+    out.toolBeforeToken = iTool >= 0 && iToken >= 0 && iTool < iToken;
+    out.toolRunLastEvent = toolEv.length ? toolEv[toolEv.length - 1].type : null;
+  } catch (e) {
+    out.toolRunError = parseErr(e).message;
+  }
+  offTool();
+
+  // ─────────────────────────────────────────────────────────────
   // M4 ③：驱动一次**真实 UI 点击**，让"越界被拒"进入归档截图。
   // 断言能证明逻辑对，但截图是人一眼能核验的东西 —— 两者都要。
   // ─────────────────────────────────────────────────────────────
@@ -565,6 +612,20 @@ export async function runSelfCheck(
       failures.push(`agent:control 未知 runId 应解出 NOT_FOUND，实际 ${String(probe.controlUnknownCode)}`);
     }
 
+    // ── M4.5：工具链路 ──
+    if (probe.toolRunError !== undefined) failures.push(`工具链路探针失败：${probe.toolRunError}`);
+    if (probe.toolRunEnded !== true) failures.push('带工具的 run 未在 12s 内结束');
+    if ((probe.toolEventCount ?? 0) < 1) {
+      failures.push('没有收到 tool 事件 —— Agent 内核的工具链路未接通（还是纯吐字的脚本？）');
+    }
+    if (probe.toolEndOk !== true) failures.push(`tool_end 未报告成功：${String(probe.toolEndOk)}`);
+    if (probe.toolBeforeToken !== true) {
+      failures.push('tool 事件没有出现在 token 之前 —— "先干活再回答"的顺序被破坏');
+    }
+    if (probe.toolRunLastEvent !== 'done') {
+      failures.push(`带工具的 run 末个事件应为 done，实际 ${String(probe.toolRunLastEvent)}`);
+    }
+
     // ── M4 ③：渲染层文件树 + 越界可见化 ──
     // 这条断言抓的是一类很隐蔽的 UI 谎言：目录读出来了，但渲染层因为
     // "只选中、没请求"而把结果画成「（空目录）」—— 看着像空文件夹，
@@ -589,6 +650,19 @@ export async function runSelfCheck(
   const criticalConsoleError = consoleErrors.filter((m) => !/Autofill|DevTools/.test(m));
   if (criticalConsoleError.length > 0) {
     failures.push(`渲染层控制台有 ${criticalConsoleError.length} 条错误`);
+  }
+
+  // ── Agent 内核不变量（不是功能断言，是"不该发生的事"）──
+  const dropped = droppedAfterTerminal();
+  const undelivered = undeliveredTerminalCount();
+  if (dropped !== 0) {
+    failures.push(`终态之后仍投递了 ${dropped} 个事件 —— 有调度没摘干净（定时器泄漏）`);
+  }
+  if (undelivered !== 0) {
+    failures.push(
+      `有 ${undelivered} 个终态事件找不到窗口被丢弃 —— 事件路由坏了：` +
+        '渲染层会收齐 token 却永远等不到 done（先删窗口映射再查就会这样）',
+    );
   }
 
   let screenshot: string | null = null;
@@ -620,6 +694,10 @@ export async function runSelfCheck(
       outsideFile: fixture.outsideFile,
     },
     probe: probe ?? ({} as SelfCheckProbe),
+    agentRuntime: {
+      droppedAfterTerminal: dropped,
+      undeliveredTerminal: undelivered,
+    },
     warnings,
     consoleErrors: criticalConsoleError,
     screenshot,
