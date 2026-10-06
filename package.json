@@ -19,7 +19,8 @@
     "verify:ipc": "node scripts/verify-type-alignment.mjs",
     "verify:core-purity": "node scripts/verify-core-purity.mjs",
     "verify:scope": "node scripts/verify-core-scope.mjs",
-    "verify": "pnpm typecheck && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:scope"
+    "verify:agent": "node scripts/verify-core-agent.mjs",
+    "verify": "pnpm typecheck && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:scope && pnpm verify:agent"
   },
   "devDependencies": {
     "typescript": "^5.6.0"
