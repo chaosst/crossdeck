@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/types",
+    // `DOM.AsyncIterable` 是必须的：FileSystemDirectoryHandle.entries() 定义在那里
+    // （OPFS 遍历目录靠它），而不是在 DOM.Iterable 里。
+    // 缺了它只会报 "Property 'entries' does not exist" —— 看起来像 API 不存在，
+    // 其实是 lib 选错了。这类"错误信息指向错误方向"的坑最费时间，记一笔。
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    // ⚠️ `types: []` —— 这就是「试金石」的机制本身。
+    //
+    // 置空之后，这个项目里拿不到任何 node 全局类型：写 `process.env`、
+    // `import 'node:fs'`、`Buffer`、`__dirname` 全部编译报错。
+    // 于是核心问题变成一个可以在编译期回答的问题：
+    //
+    //   「core 里还藏着平台假设吗？」
+    //     → 只要它有一处依赖 node，Web 壳就编译不过。
+    //
+    // 反过来，如果这里能编译过、能打包、能跑 —— 那"一套 core 多端壳"
+    // 就不是一句口号，而是一件被验证过的事。
+    "types": []
+  },
+  "include": ["src"],
+  "references": [{ "path": "../contract" }, { "path": "../core" }]
+}

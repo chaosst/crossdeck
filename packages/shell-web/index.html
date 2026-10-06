@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>crossdeck · Web 壳</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #faf9f6;
+        --panel: #ffffff;
+        --line: #e5e2da;
+        --text: #33302b;
+        --muted: #8a857c;
+        --accent: #2f6f4f;
+        --danger: #a33a2c;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1b1a18;
+          --panel: #232220;
+          --line: #363430;
+          --text: #ece8e1;
+          --muted: #9a948a;
+          --accent: #6fbf8f;
+          --danger: #e0756a;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 32px 20px 64px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.65 ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      main { max-width: 900px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0.01em; }
+      .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin-bottom: 16px;
+      }
+      .card h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+      .card p.hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+      table { border-collapse: collapse; width: 100%; font-size: 12px; }
+      th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-weight: 500; }
+      .ok { color: var(--accent); }
+      .no { color: var(--muted); }
+      button {
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { border-color: var(--muted); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      pre {
+        margin: 10px 0 0;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--bg) 60%, var(--panel));
+        font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+        white-space: pre-wrap;
+        min-height: 60px;
+        max-height: 260px;
+        overflow: auto;
+      }
+      ul { list-style: none; margin: 8px 0 0; padding: 0; }
+      li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+      li:last-child { border-bottom: 0; }
+      .kind { width: 56px; flex: none; color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+      .err { color: var(--danger); font: 12px/1.6 ui-monospace, Consolas, monospace; margin-top: 8px; white-space: pre-wrap; }
+      .badge {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 自检横幅：只出现在 ?selfcheck=1 时。
+         它的价值在于截图里一眼可见 —— 证据要能"看"，不能只留在断言里。 */
+      .banner {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px 12px;
+        margin-bottom: 14px;
+        font-size: 12.5px;
+        background: color-mix(in srgb, var(--bg) 60%, var(--panel));
+      }
+      .banner.is-ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+      .banner.is-bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

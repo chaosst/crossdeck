@@ -1,0 +1,21 @@
+{
+  "name": "@crossdeck/shell-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Web shell — the touchstone: if core cannot run here, core still hides platform assumptions",
+  "dependencies": {
+    "@crossdeck/contract": "workspace:*",
+    "@crossdeck/core": "workspace:*"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "selfcheck": "node scripts/web-selfcheck.mjs",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "vite": "^8.3.1"
+  }
+}

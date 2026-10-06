@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/contract" },
     { "path": "packages/core" },
-    { "path": "packages/shell-electron" }
+    { "path": "packages/shell-electron" },
+    { "path": "packages/shell-web" }
   ]
 }
