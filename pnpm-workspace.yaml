@@ -24,3 +24,30 @@ packages:
 allowBuilds:
   electron-winstaller: false
   esbuild: false
+
+# 版本覆盖。
+#
+# ## app-builder-lib > @electron/get 必须钉在 3.1.0
+#
+# 症状：`pnpm pack:win` 在 packaging 阶段炸掉 ——
+#   ⨯ Cannot read properties of undefined (reading 'ReadWrite')
+#     at resolveCacheMode (app-builder-lib/out/util/electronGet.js:69)
+# 即 `require("@electron/get").ElectronDownloadCacheMode` 拿到 undefined。
+#
+# 根因（对照实验，同一份 package.json，只换 registry）：
+#   registry.npmjs.org      @electron/get@^3.0.0 -> 3.1.0   ✅ 符合 semver
+#   registry.npmmirror.com  @electron/get@^3.0.0 -> 3.0.0   ❌ 挑低了
+# 这不是 electron-builder 的问题：它声明 `"@electron/get": "^3.0.0"`，
+# 而 **ElectronDownloadCacheMode 恰好是 3.1.0 才新增的导出**
+# （3.1.0 的 dist/cjs/index.js 末尾 `__exportStar(require("./types"), exports)`；
+#  实测下载两份包体确认：3.0.0 无此导出、3.1.0 有、4.0.0 起转为纯 ESM 不适合 require）。
+# 也就是说：上游的依赖范围本身就是对的，是**镜像的挑版行为不符合 semver**，
+# 把 app-builder-lib 喂到了缺枚举的 3.0.0。
+#
+# 为什么用 `<父包>><子包>` 这种带父级的写法，而不是全局覆盖：
+#   electron@44 自己依赖 @electron/get@^5.1.0（ESM），全局钉 3.1.0 会把它砸坏。
+#   带父级 = 只改 app-builder-lib 这一条边，改动面最小。
+#
+# 钉精确版本而非 `^3.1.0`：镜像连 `^3.0.0` 都挑错，不给它再挑一次的机会。
+overrides:
+  'app-builder-lib>@electron/get': 3.1.0
