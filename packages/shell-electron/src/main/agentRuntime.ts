@@ -1,153 +1,105 @@
 import { webContents } from 'electron';
 import { IPC } from '@crossdeck/contract';
-import type { AgentStreamEvent, Usage } from '@crossdeck/contract';
-import { isRunAborted } from './ipc.js';
+import type { AgentStreamEvent } from '@crossdeck/contract';
+import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
 
 /**
- * 脚本化的 Agent 运行时 + **下行流控（背压）**。
+ * 壳侧的 Agent 适配器。
  *
- * ⚠️ 这里**不是**真的 Agent。它的唯一职责是把「main → renderer 的单向流式通道」
- *    跑通并可被验证：事件顺序、跨进程序列化、批量 flush、暂停/恢复、中断、结束统计。
- *    M4.5 会把 runScripted() 换成真正接 core Agent 内核的调用
- *    （届时 core 的 events 模块产出的就是同一套 AgentStreamEvent）。
+ * M4.5 之前，这个文件里躺着整个 Agent 运行时（产字定时器、帧 flush、队列合并、
+ * 暂停语义、事件推送）—— 全是平台无关的逻辑，却只能靠"跑一遍端到端、等几秒、
+ * 看 token 数对不对"来验证。搬到 core 之后，那套算法现在由
+ * `scripts/verify-core-agent.mjs` 用假调度器在 0ms 内逐帧验完（83 条断言）。
  *
- * 为什么要做背压，而不是「一路 wc.send 就完了」：
- *   `ipcMain.handle` 只能返回一次，但 Agent 输出是 token 流。裸 `webContents.send`
- *   逐块推**没有任何背压** —— 上游快、渲染慢时事件会在渲染进程的队列里堆积，
- *   表现为 UI 越来越卡直到假死，而 main 侧毫无感知（它只是"发出去了"）。
- *   所以：产字与推字**解耦**，推字按帧节流，且可以被反向暂停。
- *
- * 三个参数都不是拍脑袋定的：
- *   - flush 16ms   → 对齐一帧，避免同一帧内多次 setState
- *   - 队列上限 2000 字符 → 超过就**合并中间态**（不是丢尾部）
- *   - pause 期间一个 token 都不推 → 这是"背压"与"降速"的区别
+ * 剩下真正属于 Electron 的只有三件事：
+ *   1. `setInterval` → core 要的 `every`
+ *   2. `Date.now`    → core 要的 `now`
+ *   3. `bus.subscribe` → `webContents.send` —— 把事件送到**发起它的那个窗口**
+ * 三端壳的这三段几乎一样，这正是分层的收益。
  */
 
-/** 模拟上游产字：每 12ms 产 3 个字符（约 250 字符/秒） */
-const PRODUCE_INTERVAL_MS = 12;
-const PRODUCE_CHUNK_SIZE = 3;
+const runtime = new AgentRuntime({
+  deps: {
+    now: () => Date.now(),
+    every: (intervalMs, fn) => {
+      const timer = setInterval(fn, intervalMs);
+      return () => clearInterval(timer);
+    },
+    newId: (prefix) =>
+      `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+  },
+  model: new ScriptedModel(),
+});
 
-/** 下行 flush：每 16ms 一帧 */
-const FLUSH_INTERVAL_MS = 16;
+/** runId → 发起它的窗口。事件要回到"自己那个窗口"，不能广播给所有人。 */
+const runWindows = new Map<string, number>();
 
-/** 待 flush 文本的上限；超过就合并中间态 */
-const QUEUE_TEXT_LIMIT = 2000;
-const QUEUE_KEEP_HEAD = 512;
-const QUEUE_KEEP_TAIL = 512;
+/**
+ * 还没登记窗口就到达的事件。
+ *
+ * 为什么需要它：`startRun()` **同步**发出 `start` 事件（这是有意的 ——
+ * 否则渲染层会漏掉首个事件，也就是"订阅晚于派发"的经典竞态）。
+ * 但壳要等 `startRun()` 返回拿到 runId 之后才能登记窗口，
+ * 于是 `start` 必然早于登记。少了这个缓冲，每次 run 的首个事件都会丢，
+ * 渲染层会一直停在"等待首个 token"。
+ */
+const earlyEvents = new Map<string, AgentStreamEvent[]>();
 
-const REPLY =
-  '这是 crossdeck 的流式通道自检输出：main 侧按 16ms 一帧批量 flush，' +
-  'renderer 逐帧累积。这段文本同时用来验证三件事——单向推送通道可用、' +
-  '事件类型跨进程保真、以及暂停/恢复真的能卡住下行流量（而不是"看起来变慢了"）。';
+/**
+ * 没人可投递而被丢弃的**终态**事件数 —— 应当恒为 0。
+ *
+ * 光修 bug 不够：这个失败模式（token 全到齐、done 永远不来）在 UI 上
+ * 只表现为"最后一帧卡住"，排查时完全不会往"事件路由写反了"想。
+ * 所以给它一个计数器，让它在报告里显性出现。
+ */
+let undeliveredTerminal = 0;
 
-export interface RunHandle {
-  runId: string;
-}
-
-interface ActiveRun {
-  runId: string;
-  windowId: number;
-  /** 反向流控：true 时 flush 一帧都不发 */
-  paused: boolean;
-  cursor: number;
-  /** 已产出但还没 flush 的文本 —— 这就是"队列" */
-  pending: string;
-  /** 因超过上限被合并掉的次数（可观测的流控健康度） */
-  mergedChunks: number;
-  ttftMs: number | undefined;
-  startedAt: number;
-  /** 构造期先留空，随后立刻被真正的定时器覆盖 */
-  produceTimer: ReturnType<typeof setInterval> | null;
-  flushTimer: ReturnType<typeof setInterval> | null;
-}
-
-const activeRuns = new Map<string, ActiveRun>();
-
-function emit(runId: string, windowId: number, event: AgentStreamEvent): void {
+function deliver(windowId: number, event: AgentStreamEvent): void {
   const wc = webContents.fromId(windowId);
   // 窗口可能在流式过程中被关掉 —— 静默失败是正确的，不该因此中断 run。
   if (!wc || wc.isDestroyed()) return;
   wc.send(IPC.agentStream, event);
 }
 
-/** 收尾：**必须**两条定时器一起清，并保证调用方一定能收到一个终结事件。 */
-function finish(run: ActiveRun, terminal: AgentStreamEvent): void {
-  if (run.produceTimer !== null) clearInterval(run.produceTimer);
-  if (run.flushTimer !== null) clearInterval(run.flushTimer);
-  run.pending = '';
-  activeRuns.delete(run.runId);
-  emit(run.runId, run.windowId, terminal);
-}
+runtime.bus.subscribe((event) => {
+  // ⚠️ 顺序不能反：必须先**查**窗口再删映射。
+  // 写成"先删再查"的话，终态事件（done / error）会查不到窗口而掉进缓冲，
+  // 于是渲染层收齐了全部 token 却永远等不到 done —— 表现为"流式卡在最后一帧"。
+  // 这个坑是真实 E2E 抓出来的，纯单测抓不到（core 那边事件确实发出去了）。
+  const windowId = runWindows.get(event.runId);
+  if (event.type === 'done' || event.type === 'error') runWindows.delete(event.runId);
 
-function buildUsage(run: ActiveRun, input: string, total: number): Usage {
-  const usage: Usage = {
-    promptTokens: input.length,
-    completionTokens: total,
-    totalMs: Date.now() - run.startedAt,
-    mergedChunks: run.mergedChunks,
-  };
-  // exactOptionalPropertyTypes 开着：字段可能 undefined 时不能直接写进去。
-  if (run.ttftMs !== undefined) usage.ttftMs = run.ttftMs;
-  return usage;
+  if (windowId === undefined) {
+    // 只有非终态事件值得缓冲：终态意味着 run 已经结束，
+    // 没有窗口可投递时再缓冲只会变成内存泄漏。
+    if (event.type !== 'done' && event.type !== 'error') {
+      const buffered = earlyEvents.get(event.runId);
+      if (buffered === undefined) earlyEvents.set(event.runId, [event]);
+      else buffered.push(event);
+    } else {
+      undeliveredTerminal += 1;
+    }
+    return;
+  }
+  deliver(windowId, event);
+});
+
+export interface RunHandle {
+  runId: string;
 }
 
 export function runScripted(windowId: number, sessionId: string, input: string): RunHandle {
-  const runId = `run_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
-  const startedAt = Date.now();
+  const { runId } = runtime.startRun({ sessionId, input });
 
-  emit(runId, windowId, { type: 'start', runId, at: startedAt });
+  runWindows.set(runId, windowId);
 
-  const chunks = [...REPLY];
-  const run: ActiveRun = {
-    runId,
-    windowId,
-    paused: false,
-    cursor: 0,
-    pending: '',
-    mergedChunks: 0,
-    ttftMs: undefined,
-    startedAt,
-    produceTimer: null,
-    flushTimer: null,
-  };
+  // 补发在登记之前到达的事件（正常情况下只有 start 一个）
+  const buffered = earlyEvents.get(runId);
+  if (buffered !== undefined) {
+    earlyEvents.delete(runId);
+    for (const event of buffered) deliver(windowId, event);
+  }
 
-  // ── 上游：产字。只往队列里塞，**不发事件** ──────────────
-  run.produceTimer = setInterval(() => {
-    if (isRunAborted(runId)) {
-      finish(run, { type: 'error', runId, code: 'ABORTED', message: '已被用户中断' });
-      return;
-    }
-
-    if (run.cursor >= chunks.length) {
-      // 上游产完了：等 flush 把队列清空再收尾，否则最后一段文本会被吞掉
-      if (run.pending === '') {
-        finish(run, { type: 'done', runId, usage: buildUsage(run, input, chunks.length) });
-      }
-      return;
-    }
-
-    run.pending += chunks.slice(run.cursor, run.cursor + PRODUCE_CHUNK_SIZE).join('');
-    run.cursor += PRODUCE_CHUNK_SIZE;
-
-    if (run.pending.length > QUEUE_TEXT_LIMIT) {
-      // 消费端跟不上：**合并中间态**（保留头尾）而不是丢尾部。
-      // 丢尾部会让 UI 的内容缺一块（用户看不出来少了什么，只觉得"答案不对"）；
-      // 合并只是让中间的字跳过去，语义与长度感都还在。
-      run.pending = run.pending.slice(0, QUEUE_KEEP_HEAD) + run.pending.slice(-QUEUE_KEEP_TAIL);
-      run.mergedChunks += 1;
-    }
-  }, PRODUCE_INTERVAL_MS);
-
-  // ── 下行：每帧一次 flush。暂停时直接返回，一个 token 都不推 ──
-  run.flushTimer = setInterval(() => {
-    if (run.paused || run.pending === '') return;
-    if (run.ttftMs === undefined) run.ttftMs = Date.now() - run.startedAt;
-    const text = run.pending;
-    run.pending = '';
-    emit(runId, windowId, { type: 'token', runId, text });
-  }, FLUSH_INTERVAL_MS);
-
-  activeRuns.set(runId, run);
   return { runId };
 }
 
@@ -159,21 +111,35 @@ export function runScripted(windowId: number, sessionId: string, input: string):
  *   实际那个 run 早就结束，用户看到的是 UI 状态和真实状态不一致。
  */
 export function controlRun(runId: string, type: 'pause' | 'resume'): boolean {
-  const run = activeRuns.get(runId);
-  if (run === undefined) return false;
-  run.paused = type === 'pause';
-  return true;
+  return runtime.pauseOrResume(runId, type);
 }
 
-/** 会话被删 / 窗口关闭时调用，避免定时器泄漏。 */
+/** 中断一个 run。核心会补发一个 ABORTED 终结事件，UI 不会卡在"流式中"。 */
+export function abortRun(runId: string): boolean {
+  return runtime.abort(runId);
+}
+
+/** 会话被删 / 窗口关闭时调用，避免调度泄漏。 */
 export function stopAllRuns(): void {
-  for (const run of activeRuns.values()) {
-    if (run.produceTimer !== null) clearInterval(run.produceTimer);
-    if (run.flushTimer !== null) clearInterval(run.flushTimer);
-  }
-  activeRuns.clear();
+  runtime.stopAll();
+  runWindows.clear();
+  earlyEvents.clear();
 }
 
 export function activeRunCount(): number {
-  return activeRuns.size;
+  return runtime.activeRunCount;
+}
+
+/** 自检用的自查口：终态之后仍被投递的事件数应当恒为 0。 */
+export function droppedAfterTerminal(): number {
+  return runtime.droppedAfterTerminal;
+}
+
+/**
+ * 自检用的自查口：找不到窗口而丢弃的终态事件数，应当恒为 0。
+ * 非 0 说明事件路由坏了（比如"先删窗口映射再查"），
+ * 表现是渲染层收齐 token 却永远等不到 done。
+ */
+export function undeliveredTerminalCount(): number {
+  return undeliveredTerminal;
 }

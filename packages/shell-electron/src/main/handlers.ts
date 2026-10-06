@@ -11,7 +11,7 @@ import type {
   Workspace,
 } from '@crossdeck/contract';
 import { SessionStore, WorkspaceStore, createPathGuard, joinPath } from '@crossdeck/core';
-import { controlRun, runScripted } from './agentRuntime.js';
+import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
 import { createWindow } from './windows.js';
@@ -152,7 +152,17 @@ export function registerHandlers(): number {
   });
 
   defineInvoke(IPC.agentAbort, async (req): Promise<void> => {
+    // 两件事都做，理由不同：
+    //   markRunAborted → 供 handler 里轮询 ctx.isAborted 的长任务自行退出
+    //   abortRun       → 让核心立刻摘掉调度，并**补发一个 ABORTED 终结事件**
+    // 只做前者的话，被中断的 run 不发终结事件，UI 会永远停在"流式中"。
     markRunAborted(req.runId);
+    // 但**不**在这里抛 NOT_FOUND，与 agent:control 有意不同：
+    //   · pause/resume 的诉求是"改变状态"。静默成功会让 UI 以为自己暂停了、
+    //     而真实状态是"早就结束了" —— 两边不一致，所以必须抛。
+    //   · abort 的诉求是"让它别跑了"。run 已经结束 = 目标已经达成，就是成功。
+    //     抛错反而会让"点了停止但刚好跑完"这个常见竞态弹出一个莫名其妙的错误。
+    abortRun(req.runId);
   });
 
   defineInvoke(IPC.agentControl, async (req): Promise<void> => {
