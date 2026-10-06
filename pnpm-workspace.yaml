@@ -17,5 +17,10 @@ packages:
 #   显式 false = 我已决策不放行，pnpm 才停止报错。
 #
 # 副作用是供应链攻击面更小：装的依赖里没有任何一个会在安装时执行脚本。
+#
+# electron-winstaller 随 electron-builder 一起进来，是 **Squirrel.Windows** 的后端。
+# 本项目 Win 目标用 NSIS（见 electron-builder.yml），走不到它 —— 不放行，
+# 它也就不会在安装时往仓库里写任何东西。
 allowBuilds:
+  electron-winstaller: false
   esbuild: false

@@ -5,6 +5,8 @@ import type {
   IpcErrorCode,
   SessionMeta,
   SystemInfo,
+  UpdateInfo,
+  UpdateStatus,
   WindowKind,
   Workspace,
 } from '@crossdeck/contract';
@@ -139,4 +141,26 @@ export function attachStreamRenderer(
 /** 订阅原始事件流（App 用这个，需要看到全部事件类型）。 */
 export function onAgentEvent(handler: (event: AgentStreamEvent) => void): () => void {
   return window.bridge.on(IPC.agentStream, handler);
+}
+
+// ── M5：自动更新 ─────────────────────────────────────────────
+// 注意 renderer 这侧**不知道** electron-updater 的存在，也不知道 feed 长什么样。
+// 它只认识 UpdateStatus 这个判别联合 —— 这正是 contract 存在的意义：
+// 换一个壳（鸿蒙走 AppGallery）时，这几行一行都不用改。
+
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  return window.bridge.invoke(IPC.updateCheck);
+}
+
+export async function downloadUpdate(): Promise<void> {
+  return window.bridge.invoke(IPC.updateDownload);
+}
+
+export async function installUpdate(): Promise<void> {
+  return window.bridge.invoke(IPC.updateInstall);
+}
+
+/** 订阅更新进度。返回取消函数 —— 与 agent 流同一个理由：卸载不摘会泄漏。 */
+export function onUpdateStatus(handler: (status: UpdateStatus) => void): () => void {
+  return window.bridge.on(IPC.updateStatus, handler);
 }

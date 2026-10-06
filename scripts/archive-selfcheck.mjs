@@ -79,6 +79,30 @@ const summary = {
     tokensAfterResume: report.probe?.resumeTokenCount ?? null,
     unknownRunRejectedAs: report.probe?.controlUnknownCode ?? null,
   },
+  // ── M5：自动更新 ──
+  // 自检跑的是**未打包**形态，所以这一节记录的不是"更新能下载"（那要真打包才能验），
+  // 而是更重要的那条：**不具备条件时会不会如实说**。
+  m5: {
+    updateCardRendered: report.probe?.updateButtonClicked ?? null,
+    /** 界面停在哪个阶段 —— 出现 'checking' 就是「永远转圈」复现，M5-3 未达成 */
+    stageShownInUi: report.probe?.updateDomStage ?? null,
+    retryableFlagInUi: report.probe?.updateDomRetryable ?? null,
+    pushedStatuses: report.probe?.updateEventCount ?? null,
+    firstPushedStage: report.probe?.updateFirstStage ?? null,
+    pushedErrorMessage: report.probe?.updateFirstMessage ?? null,
+    sawCheckingStage: report.probe?.updateSawChecking ?? null,
+    unpackagedRejectedAs: report.probe?.updateCheckCode
+      ? `${report.probe.updateCheckCode}:${report.probe.updateCheckDetail}`
+      : null,
+    downloadWithoutVersionThrew: report.probe?.updateDownloadThrew ?? null,
+    installWithoutReadyThrew: report.probe?.updateInstallThrew ?? null,
+    /** 退订前 / 退订后的事件数 —— 相等才说明推送监听真的摘掉了 */
+    eventsBeforeUnsub: report.probe?.updateEventsBeforeUnsub ?? null,
+    eventsAfterUnsub: report.probe?.updateEventsAfterUnsub ?? null,
+    unsubscribeWorks:
+      report.probe?.updateEventsBeforeUnsub !== undefined &&
+      report.probe?.updateEventsBeforeUnsub === report.probe?.updateEventsAfterUnsub,
+  },
   /** 不判失败、但必须被看见的事项（例如平台不允许建 symlink） */
   warnings: report.warnings ?? [],
   failures: report.failures,

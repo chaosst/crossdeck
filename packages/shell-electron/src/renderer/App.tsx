@@ -6,21 +6,26 @@ import type {
   DirEntry,
   SessionMeta,
   SystemInfo,
+  UpdateStatus,
   Usage,
   WindowKind,
   Workspace,
 } from '@crossdeck/contract';
 import {
+  checkForUpdate,
   controlAgentRun,
   createSession,
   deleteSession,
   describeIpcError,
+  downloadUpdate,
   getSystemInfo,
   grantWorkspace,
+  installUpdate,
   listDir,
   listSessions,
   listWorkspaces,
   onAgentEvent,
+  onUpdateStatus,
   openWindow,
   readFileText,
   startAgentRun,
@@ -60,6 +65,27 @@ export default function App() {
     null,
   );
   const [fsError, setFsError] = useState<string | null>(null);
+
+  // ── M5：自动更新 ──
+  /**
+   * `null` = **还没查过**。
+   *
+   * 与 `idle` 刻意分开：idle 的语义是"查过了、没有可装的新版"，
+   * 而 null 是"不知道"。把两者合并会让界面在启动瞬间就宣称"已是最新" ——
+   * 那是在说一句它并不知道的话。
+   */
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+
+  /**
+   * 只有 available / downloading / ready 三种状态带 info。
+   * 提成局部变量而不是在 JSX 里写 `'info' in update`：`in` 收窄在 JSX 的属性访问
+   * 位置上不好使（TS 会把联合摊平后再报"某分支上没有 info"）。
+   */
+  const updateInfo = update !== null && 'info' in update ? update.info : null;
+  /** 更新入口只由**能力**决定 —— 见下方卡片注释。 */
+  const supportsAutoUpdate = info?.capabilities.includes('update.auto') === true;
 
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
@@ -205,6 +231,55 @@ export default function App() {
   useEffect(() => {
     void loadWorkspaces();
   }, [loadWorkspaces]);
+
+  // ── 更新进度订阅 ──
+  // 与 agent 流同一个理由：卸载不摘监听，每次挂载都会多一个 ——
+  // 但对更新来说后果更难看（同一条进度会被推 N 次，进度条看起来像在抽搐）。
+  useEffect(() => {
+    return onUpdateStatus((s) => setUpdate(s));
+  }, []);
+
+  const handleCheckUpdate = useCallback(async () => {
+    setUpdateError(null);
+    setUpdateBusy(true);
+    try {
+      const found = await checkForUpdate();
+      // 返回 null 的语义是"没有可装的新版"。但**只有**在推送状态也是 idle 时才这么写 ——
+      // 若走的是 UNSUPPORTED 那条路，这里根本到不了（会先抛错）。
+      if (found === null) setUpdate((prev) => prev ?? { stage: 'idle' });
+    } catch (err) {
+      // 未打包形态会在这里抛 UNSUPPORTED —— 如实显示，不给"重试"按钮
+      setUpdateError(describeIpcError(err).text);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, []);
+
+  const handleDownloadUpdate = useCallback(async () => {
+    setUpdateError(null);
+    setUpdateBusy(true);
+    try {
+      await downloadUpdate();
+    } catch (err) {
+      setUpdateError(describeIpcError(err).text);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, []);
+
+  const handleInstallUpdate = useCallback(async () => {
+    setUpdateError(null);
+    setUpdateBusy(true);
+    try {
+      await installUpdate();
+      // 到这里进程马上就要消失了 —— 后面的 setState 不会有人看见。
+      // 之所以还能走到 finally，是因为主进程把 quitAndInstall 放进了 setImmediate。
+    } catch (err) {
+      setUpdateError(describeIpcError(err).text);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, []);
 
   const handleGrant = useCallback(async () => {
     setFsError(null);
@@ -522,6 +597,108 @@ export default function App() {
                 )}
               </div>
             </Card>
+
+            {/*
+              更新入口由**能力**决定，不是由平台决定 ——
+              core 里没有一行 `if (platform === 'electron')`。
+              Web 壳的 capabilities 里没有 update.auto，这块就自然不出现。
+            */}
+            {supportsAutoUpdate && (
+              <Card
+                title="自动更新 · 靠 update.auto 能力探测，不靠平台判断"
+                action={
+                  <div className="flex gap-2">
+                    <Button onClick={() => void handleCheckUpdate()} disabled={updateBusy}>
+                      <span data-testid="update-check">检查更新</span>
+                    </Button>
+                    <Button
+                      onClick={() => void handleDownloadUpdate()}
+                      disabled={updateBusy || update?.stage !== 'available'}
+                    >
+                      下载
+                    </Button>
+                    <Button
+                      onClick={() => void handleInstallUpdate()}
+                      disabled={updateBusy || update?.stage !== 'ready'}
+                    >
+                      重启并安装
+                    </Button>
+                  </div>
+                }
+              >
+                <p className="text-[12px] text-[#8a857c]">
+                  版本比较、该不该升、进度是否可信这三件事都在 core 里（纯逻辑，可断言）；
+                  这里只把状态如实画出来。无签名 / 未打包环境下**必须**落到 error 或
+                  UNSUPPORTED，不允许停在「检查中…」。
+                </p>
+
+                <div
+                  data-testid="update-status"
+                  data-stage={update?.stage ?? 'never'}
+                  data-retryable={update?.stage === 'error' ? String(update.retryable) : ''}
+                  data-percent={
+                    update?.stage === 'downloading' ? String(update.percent) : ''
+                  }
+                  className="mt-3 rounded border border-[#e5e2da] bg-[#faf9f6] p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={
+                        'rounded-full px-2 py-0.5 text-[11px] font-medium ' +
+                        (update?.stage === 'error'
+                          ? 'bg-[#fbe4e4] text-[#a12626]'
+                          : update?.stage === 'ready'
+                            ? 'bg-[#e3f5e8] text-[#1f6b3a]'
+                            : 'bg-[#f0eee8] text-[#7a756c]')
+                      }
+                    >
+                      {update?.stage ?? '尚未检查'}
+                    </span>
+                    <span className="text-[13px] text-[#33302b]">{updateLine(update)}</span>
+                  </div>
+
+                  {update?.stage === 'downloading' && (
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-[#eae7e0]">
+                      <div
+                        className="h-full bg-[#1f6b3a] transition-[width] duration-200"
+                        style={{ width: `${update.percent}%` }}
+                      />
+                    </div>
+                  )}
+
+                  {updateInfo !== null && (
+                    <details className="mt-2 text-[11px] text-[#5c5750]">
+                      <summary className="cursor-pointer text-[#8a857c]">
+                        更新说明（{updateInfo.version}）
+                      </summary>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans leading-relaxed">
+                        {updateInfo.notes ?? '（这一版没有提供说明）'}
+                      </pre>
+                    </details>
+                  )}
+
+                  {update?.stage === 'error' && (
+                    <p className="mt-2 text-[11px] text-[#8a857c]">
+                      {update.retryable
+                        ? '这类失败重试有意义（网络抖动）——可以过一会儿再点一次。'
+                        : '这类失败重试一万次也一样（签名/配置问题）——已刻意不给「重试」入口。'}
+                    </p>
+                  )}
+                </div>
+
+                {/*
+                  状态机已经在说这件事时（stage=error），就不再重复一遍抛错文本 ——
+                  两条链路都会把失败讲出来，但 UI 只该说一次。
+                  结构化错误码仍然完整存在于 invoke 的抛错里（自检断言的就是它），
+                  只是不该同时挤在屏幕上。
+                */}
+                {updateError !== null && update?.stage !== 'error' && (
+                  <pre className="mt-2 whitespace-pre-wrap rounded border border-[#e8c9c9] bg-[#fdf6f6] p-3 font-mono text-[11px] leading-relaxed text-[#a12626]">
+                    {updateError}
+                  </pre>
+                )}
+              </Card>
+            )}
           </>
         )}
 
@@ -542,6 +719,33 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+/**
+ * 把状态折成**一句人话**。
+ *
+ * switch 走判别联合并留 assertNever 兜底：契约里新增一个阶段而这里忘了画，
+ * 编译期就报错，而不是在界面上静默漏掉一整个状态 ——
+ * 「永远转圈」这类 bug 有一半就是这么来的。
+ */
+function updateLine(s: UpdateStatus | null): string {
+  if (s === null) return '不知道有没有新版本 —— 还没查过。';
+  switch (s.stage) {
+    case 'idle':
+      return '已是最新（查过了，没有可装的新版本）。';
+    case 'checking':
+      return '正在问更新源…';
+    case 'available':
+      return `发现新版本 ${s.info.version}，可以下载。`;
+    case 'downloading':
+      return `正在下载 ${s.info.version} · ${s.percent}%`;
+    case 'ready':
+      return `${s.info.version} 已下载完成，重启后安装。`;
+    case 'error':
+      return s.message;
+    default:
+      return assertNever(s);
+  }
 }
 
 function Card({

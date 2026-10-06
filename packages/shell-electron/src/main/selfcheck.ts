@@ -1,8 +1,9 @@
 import { app, BrowserWindow } from 'electron';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
 import { runtimeConfig } from './runtimeConfig.js';
+import { currentUpdateStatus, resetUpdateStateForSelfCheck } from './updater.js';
 
 /**
  * 自检模式 —— 把「跑起来了」变成**可归档的证据**，而不是一句主观判断。
@@ -60,37 +61,57 @@ export function prepareScopeFixture(outDir: string): ScopeFixture {
 
   const linkName = 'link-out';
   const linkPath = join(root, linkName);
+  // 用相对目标：整个夹具目录可以被搬走而不破坏链接
+  const linkTarget = join('..', 'outside', 'secret.txt');
 
-  // 夹具必须**幂等**。少了这一步：上一轮留下的 link-out 会让 symlinkSync 抛 EEXIST，
-  // 而 EEXIST 很容易被误读成「平台不支持 symlink」—— 于是这条反向断言从第二轮起
-  // 就永远退化成 skipped。**看着是"跳过了"，实际是"从来没验过"**，
-  // 而 skipped 又不判失败，所以它会一直安静地烂在那里。
+  /**
+   * 幂等靠**复用**，不靠"先删再建"。
+   *
+   * 走过的弯路记在这里，免得再踩：
+   *   第一版用 `rmSync(linkPath, {recursive:true})` 清残留。本机环境下
+   *   NODE_OPTIONS 里的 safe-delete shim 会被 Electron 主进程继承，而那个守卫是
+   *   **按工具调用累计配额**的（阈值 50 个文件）—— 应用内的删除会花掉同一次调用
+   *   剩下的额度。额度耗尽后这一步静默变成空操作 → 接着 `symlinkSync` 抛 EEXIST →
+   *   symlink 逃逸这条**安全断言**从第二轮起永远退化成 skipped，
+   *   而 skipped 不判失败，于是它会一直安静地烂在那里。
+   *   最坑的是症状看起来像"平台不给建符号链接"，与真实原因完全对不上。
+   *
+   * 改成"残留正好是我们要的东西就直接用"之后：不依赖任何删除能力、
+   * 不依赖任何环境变量，而且省掉一次建链。删除被拦、被沙箱改写都不再影响这条断言。
+   */
+  let symlink: ScopeFixture['symlink'] = { status: 'skipped', name: null, reason: null };
+  let needCreate = true;
+
   try {
-    rmSync(linkPath, { force: true, recursive: true });
+    const existing = lstatSync(linkPath);
+    if (existing.isSymbolicLink() && readlinkSync(linkPath) === linkTarget) {
+      symlink = { status: 'ok', name: linkName, reason: null };
+      needCreate = false;
+    }
   } catch {
-    // 清不掉就交给下面的创建去报错 —— 但那时要把 EEXIST 如实说出来，不能再赖平台
+    // 不存在是最常见的情况 —— 继续往下建
   }
 
-  let symlink: ScopeFixture['symlink'] = { status: 'skipped', name: null, reason: null };
-  try {
-    // 用相对目标：整个夹具目录可以被搬走而不破坏链接
-    symlinkSync(join('..', 'outside', 'secret.txt'), linkPath, 'file');
-    symlink = { status: 'ok', name: linkName, reason: null };
-  } catch (err) {
-    // 区分「平台不允许」和「残留文件冲突」—— 两者的处置完全不同：
-    // 前者是已知的降级（core 单测兜住），后者是**夹具自己坏了**，必须能一眼看出来。
-    const code = (err as { code?: unknown } | null)?.code;
-    const why =
-      code === 'EPERM' || code === 'EACCES'
-        ? '当前账户无创建符号链接的权限（Windows 需开发者模式 / 管理员）'
-        : code === 'EEXIST'
-          ? '同名条目已存在且无法清除（夹具状态不干净）'
-          : `创建失败（${String(code ?? 'unknown')}）`;
-    symlink = {
-      status: 'skipped',
-      name: null,
-      reason: `${why}：${err instanceof Error ? err.message : String(err)}`,
-    };
+  if (needCreate) {
+    try {
+      symlinkSync(linkTarget, linkPath, 'file');
+      symlink = { status: 'ok', name: linkName, reason: null };
+    } catch (err) {
+      // 区分「平台不允许」和「残留条目冲突」—— 两者的处置完全不同：
+      // 前者是已知的降级（core 单测兜住），后者是**夹具自己坏了**，必须能一眼看出来。
+      const code = (err as { code?: unknown } | null)?.code;
+      const why =
+        code === 'EPERM' || code === 'EACCES'
+          ? '当前账户无创建符号链接的权限（Windows 需开发者模式 / 管理员）'
+          : code === 'EEXIST'
+            ? '同名条目已存在、但不是指向预期目标的符号链接（夹具状态不干净）'
+            : `创建失败（${String(code ?? 'unknown')}）`;
+      symlink = {
+        status: 'skipped',
+        name: null,
+        reason: `${why}：${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   return { root, symlink, outsideFile, probeFile: 'hello.txt' };
@@ -160,6 +181,28 @@ export interface SelfCheckProbe {
   uiEmptyNotice?: boolean;
   uiEscapeClicked?: boolean;
   uiEscapeShown?: boolean;
+  // ── M5：自动更新 —— 未打包形态下"必须如实说不" ──
+  updateButtonClicked?: boolean;
+  /** 点完按钮后界面上呈现的阶段 —— M5-3 的关键：**不允许**是 checking */
+  updateDomStage?: string | null;
+  updateDomRetryable?: string | null;
+  /** 推送到达的事件数 —— 应当恰好 1（不多不少：不重复推、也不漏推） */
+  updateEventCount?: number;
+  updateFirstStage?: string | null;
+  updateFirstRetryable?: boolean | null;
+  updateFirstMessage?: string | null;
+  updateSawChecking?: boolean;
+  updateLastStage?: string | null;
+  updateCheckThrew?: boolean;
+  updateCheckCode?: string | null;
+  updateCheckDetail?: string | null;
+  updateDownloadThrew?: boolean;
+  updateDownloadCode?: string | null;
+  updateInstallThrew?: boolean;
+  updateInstallCode?: string | null;
+  /** 退订之后再触发一次，事件数应当**不变** —— 不变才说明真的退订了 */
+  updateEventsBeforeUnsub?: number;
+  updateEventsAfterUnsub?: number;
   domStatus: string | null;
   domText: string;
 }
@@ -458,9 +501,95 @@ function buildProbeScript(fixture: ScopeFixture): string {
     out.uiEscapeClicked = false;
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // M5：自动更新 —— 在**未打包**形态下必须如实说"不支持"
+  //
+  // 这是 M5-3 的验收（无签名 / 未打包环境不允许停在「检查中…」）。
+  // 刻意走真实点击：断言能证明链路，截图能让人一眼核验。
+  // ─────────────────────────────────────────────────────────────
+  const upEvents = [];
+  window.__upEvents = upEvents;
+  const offUp = window.bridge.on('update:status', (s) => upEvents.push(s));
+  const upBtn = document.querySelector('[data-testid="update-check"]');
+  if (upBtn) {
+    upBtn.click();
+    out.updateButtonClicked = true;
+    // 等 React 把推送过来的状态画到 DOM 上（invoke 是异步的）
+    await new Promise((r) => setTimeout(r, 700));
+    const el = document.querySelector('[data-testid="update-status"]');
+    out.updateDomStage = el ? el.getAttribute('data-stage') : null;
+    out.updateDomRetryable = el ? el.getAttribute('data-retryable') : null;
+  } else {
+    out.updateButtonClicked = false;
+  }
+
+  out.updateEventCount = upEvents.length;
+  out.updateFirstStage = upEvents.length ? upEvents[0].stage : null;
+  out.updateFirstRetryable = upEvents.length ? upEvents[0].retryable : null;
+  out.updateFirstMessage = upEvents.length ? upEvents[0].message : null;
+  out.updateSawChecking = upEvents.some((s) => s.stage === 'checking');
+  out.updateLastStage = upEvents.length ? upEvents[upEvents.length - 1].stage : null;
+
+  // 直接调 invoke 也要能拿到结构化错误码（按钮那条路把它收进了状态里）
+  try {
+    await window.bridge.invoke('update:check');
+    out.updateCheckThrew = false;
+  } catch (e) {
+    const p = parseErr(e);
+    out.updateCheckThrew = true;
+    out.updateCheckCode = p.code;
+    out.updateCheckDetail = p.detail;
+  }
+
+  // 另外两条通道在没有可用版本时也必须**抛错**，不能静默成功 ——
+  // 静默成功会让 UI 以为"已经开始下载了"，然后一直等一个永远不会来的进度。
+  try {
+    await window.bridge.invoke('update:download');
+    out.updateDownloadThrew = false;
+  } catch (e) {
+    out.updateDownloadThrew = true;
+    out.updateDownloadCode = parseErr(e).code;
+  }
+  try {
+    await window.bridge.invoke('update:install');
+    out.updateInstallThrew = false;
+  } catch (e) {
+    out.updateInstallThrew = true;
+    out.updateInstallCode = parseErr(e).code;
+  }
+
+  // 退订。第二次触发由 main 侧在复位状态之后发起（否则会被去重掉，
+  // 「退订失效」也能通过 —— 这条断言第一版就是这么被骗过去的）。
+  out.updateEventsBeforeUnsub = upEvents.length;
+  offUp();
+
   const statusEl = document.querySelector('[data-testid="boot-status"]');
   out.domStatus = statusEl ? statusEl.getAttribute('data-state') : null;
   out.domText = document.body.innerText.slice(0, 1500);
+  return out;
+})()`;
+}
+
+/**
+ * 第二阶段探针：main 侧已把更新状态复位，这里再触发一次检查。
+ *
+ * 目的只有一个 —— 验证第一条推送通道的**退订真的生效**：
+ * 上一个探针已经 offUp()，若事件数仍然不变，说明监听器确实摘掉了。
+ * 这条断言对 agent 流已经有过（evA 不再增长），但那是另一条通道；
+ * 推送通道的退订逻辑在 preload 里是同一段代码，可**用到**它的地方是两条 ——
+ * 只测一条就等于没测另一条。
+ */
+function buildUpdateResumeProbeScript(): string {
+  return `(async () => {
+  const out = {};
+  try {
+    await window.bridge.invoke('update:check');
+    out.resumeThrew = false;
+  } catch (e) {
+    out.resumeThrew = true;
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  out.eventsWhileUnsubscribed = (window.__upEvents || []).length;
   return out;
 })()`;
 }
@@ -643,8 +772,104 @@ export async function runSelfCheck(
     if (probe.uiEscapeShown !== true) {
       failures.push('点击「试读 ../」后界面上没有出现 SCOPE_DENIED —— 越界拒绝没有对用户可见');
     }
+
+    // ── M5：自动更新（M5-3 验收：未打包 / 无签名环境必须报 error，不允许转圈）──
+    if (probe.updateButtonClicked !== true) {
+      failures.push('界面里没有找到「检查更新」按钮 —— update.auto 能力探测或卡片渲染失效');
+    }
+    // 这条是 M5-3 的核心断言：**不是** checking。
+    // 界面停在 checking = 用户面对一个转圈到天荒地老的按钮，
+    // 而 electron-updater 在这种情况下恰恰不会抛错（它只打一行日志）。
+    if (probe.updateDomStage === 'checking') {
+      failures.push('未打包环境下界面停在了 checking —— 「永远转圈」复现（M5-3 未达成）');
+    }
+    if (probe.updateDomStage !== 'error') {
+      failures.push(
+        `未打包环境下界面阶段应为 error，实际 ${String(probe.updateDomStage)} —— ` +
+          '更新功能在不可用时要如实显示，不能装作没事',
+      );
+    }
+    if (probe.updateDomRetryable !== 'false') {
+      failures.push(
+        `未打包/无签名这类失败必须标成不可重试，实际 retryable=${String(probe.updateDomRetryable)} —— ` +
+          '给了重试按钮等于把唯一的路指错方向',
+      );
+    }
+    // 恰好 1 条：既不能是 0（通道没接上），也不能重复推（渲染层会被同一条状态刷屏）
+    if (probe.updateEventCount !== 1) {
+      failures.push(
+        `点击检查更新应恰好收到 1 条 update:status，实际 ${String(probe.updateEventCount)}`,
+      );
+    }
+    if (probe.updateFirstStage !== 'error') failures.push(`首条 update:status 应为 error，实际 ${String(probe.updateFirstStage)}`);
+    if (probe.updateFirstRetryable !== false) failures.push('首条 update:status 的 retryable 应为 false');
+    if (typeof probe.updateFirstMessage !== 'string' || probe.updateFirstMessage.length === 0) {
+      failures.push('error 阶段没带 message —— 用户只会看到一个红点，不知道发生了什么');
+    }
+    if (probe.updateSawChecking === true) {
+      failures.push('推送里出现了 checking 阶段 —— 自我否决的路径不该先宣称"正在检查"');
+    }
+    // 反向：不支持的环境里，另外两条通道也必须抛错，不能静默成功
+    if (probe.updateCheckThrew !== true) failures.push('未打包环境下 update:check 竟然没有失败');
+    if (probe.updateCheckCode !== 'UNSUPPORTED') {
+      failures.push(
+        `update:check 应解出 UNSUPPORTED，实际 ${String(probe.updateCheckCode)} —— ` +
+          '压成 INTERNAL 会让 UI 提示"请上报 bug"，而正确动作是隐藏入口',
+      );
+    }
+    if (probe.updateCheckDetail !== 'NOT_PACKAGED') {
+      failures.push(`update:check 的 detail 应为 NOT_PACKAGED，实际 ${String(probe.updateCheckDetail)}`);
+    }
+    if (probe.updateDownloadThrew !== true) {
+      failures.push('没有可用版本时 update:download 静默成功了 —— UI 会一直等一个永远不来的进度');
+    }
+    if (probe.updateInstallThrew !== true) failures.push('未就绪时 update:install 静默成功了');
   } catch (err) {
     failures.push(`探针执行失败：${String(err)}`);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // M5 第二段：推送通道的退订是否真的生效。
+  //
+  // 必须先复位状态：不复位的话第二次推的是同一条 error（消息完全相同），
+  // 会被 main 的「重复状态不推」去重 —— 于是"退订失效"也能通过。
+  // 第一版就是这么写的，被去重骗过去了，所以这条复位是断言的一部分，不是清理。
+  // ─────────────────────────────────────────────────────────────
+  resetUpdateStateForSelfCheck();
+  if (probe !== null) {
+    try {
+      const resume = (await win.webContents.executeJavaScript(
+        buildUpdateResumeProbeScript(),
+      )) as { resumeThrew?: boolean; eventsWhileUnsubscribed?: number };
+
+      if (resume.resumeThrew !== true) {
+        failures.push('复位后再检查更新竟然没有抛错 —— 确认状态机没有被意外放行');
+      }
+      // exactOptionalPropertyTypes 下不能把 undefined 赋给可选属性 —— 显式判一下，
+      // 顺便把"探针没返回计数"变成一条可见的失败，而不是静默跳过断言。
+      if (typeof resume.eventsWhileUnsubscribed === 'number') {
+        probe.updateEventsAfterUnsub = resume.eventsWhileUnsubscribed;
+      } else {
+        failures.push('退订探针没有返回事件计数 —— 无法判定监听器是否泄漏');
+      }
+      if (probe.updateEventsAfterUnsub !== probe.updateEventsBeforeUnsub) {
+        failures.push(
+          "bridge.on('update:status') 退订无效 —— " +
+            `退订前 ${String(probe.updateEventsBeforeUnsub)} 条，退订后又涨到 ` +
+            `${String(probe.updateEventsAfterUnsub)} 条（监听器泄漏）`,
+        );
+      }
+      // 跨进程一致性：main 认为的状态与推给渲染层的最后一个阶段必须一致。
+      // 不一致意味着有状态变化没被推出去 —— 用户看到的界面会永远落后一步。
+      const mainStage = currentUpdateStatus().stage;
+      if (mainStage !== probe.updateLastStage) {
+        failures.push(
+          `main 侧状态(${mainStage}) 与推给渲染层的最后阶段(${String(probe.updateLastStage)}) 不一致 —— 有状态变化没推送`,
+        );
+      }
+    } catch (err) {
+      failures.push(`更新退订探针执行失败：${String(err)}`);
+    }
   }
 
   const criticalConsoleError = consoleErrors.filter((m) => !/Autofill|DevTools/.test(m));

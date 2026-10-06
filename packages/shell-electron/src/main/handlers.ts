@@ -14,6 +14,7 @@ import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } fro
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
+import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
 
 /**
@@ -212,6 +213,15 @@ export function registerHandlers(): number {
     const abs = await resolveOrThrow(req.workspaceId, req.path);
     return withFsErrors('取文件信息', () => fsPort.stat(abs));
   });
+
+  // ── 自动更新（M5）────────────────────────────────────────
+  // 三条通道都**不做**能力判断：判断在 updater.ts 里，且判定失败时抛
+  // UNSUPPORTED 而不是返回 null —— handler 只负责转发，不替它决定"能不能"。
+  defineInvoke(IPC.updateCheck, async () => checkForUpdates());
+
+  defineInvoke(IPC.updateDownload, async (): Promise<void> => downloadUpdate());
+
+  defineInvoke(IPC.updateInstall, async (): Promise<void> => installUpdate());
 
   return registeredChannels().length;
 }

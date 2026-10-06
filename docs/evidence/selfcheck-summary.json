@@ -1,11 +1,11 @@
 {
-  "updatedAt": "2026-10-05T13:43:26.091Z",
-  "mode": "dev",
+  "updatedAt": "2026-10-06T17:03:04.942Z",
+  "mode": "prod",
   "ok": true,
   "electron": "44.4.5",
   "chrome": "152.0.7977.130",
   "node": "24.21.0",
-  "registeredChannelCount": 15,
+  "registeredChannelCount": 18,
   "assertionSummary": {
     "bridgeMounted": true,
     "systemInfoOk": true,
@@ -34,8 +34,23 @@
     "tokensAfterResume": 1,
     "unknownRunRejectedAs": "NOT_FOUND"
   },
+  "m5": {
+    "updateCardRendered": true,
+    "stageShownInUi": "error",
+    "retryableFlagInUi": "false",
+    "pushedStatuses": 1,
+    "firstPushedStage": "error",
+    "pushedErrorMessage": "检查更新不可用：当前是未打包的开发形态，没有 app-update.yml 也就没有可比的版本",
+    "sawCheckingStage": false,
+    "unpackagedRejectedAs": "UNSUPPORTED:NOT_PACKAGED",
+    "downloadWithoutVersionThrew": true,
+    "installWithoutReadyThrew": true,
+    "eventsBeforeUnsub": 3,
+    "eventsAfterUnsub": 3,
+    "unsubscribeWorks": true
+  },
   "warnings": [],
   "failures": [],
-  "reportFile": "docs/evidence/selfcheck-dev.json",
-  "screenshotFile": "docs/evidence/window-dev.png"
+  "reportFile": "docs/evidence/selfcheck-prod.json",
+  "screenshotFile": "docs/evidence/window-prod.png"
 }

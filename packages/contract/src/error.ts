@@ -31,6 +31,25 @@ export type IpcErrorCode =
   | 'SCOPE_DENIED'
   /** 工作区是只读的，写操作被拒（M4 新增） */
   | 'READONLY'
+  /**
+   * 外部依赖失败 —— 不是本程序的 bug，重试有意义（M5 新增）。
+   *
+   * 为什么复用 INTERNAL 不行：M5 起「检查更新」会把 feed 服务、CDN、
+   * 代理这些**程序之外**的东西拉进调用链。这条路失败时 UI 该说
+   * 「网络不通，稍后重试」，而不是弹一个让人怀疑软件质量的技术错误 ——
+   * 而 INTERNAL 的语义恰恰是「请你上报」。
+   */
+  | 'UPSTREAM'
+  /**
+   * 当前环境根本不具备这个能力（M5 新增）。
+   *
+   * 与 FORBIDDEN 的区别是**有没有权限模型**：
+   *   FORBIDDEN   = 你（这个身份 / 这个会话）不被允许
+   *   UNSUPPORTED = 无论谁都不行 —— 比如以未打包形态运行的下载版、
+   *                 或平台压根没有这条通道（Web 壳）。
+   * UI 的动作也不同：前者提示权限，后者应当**隐藏入口**并说明安装方式。
+   */
+  | 'UNSUPPORTED'
   | 'ABORTED'
   | 'INTERNAL';
 
@@ -148,6 +167,8 @@ const KNOWN_CODES: readonly IpcErrorCode[] = [
   'FORBIDDEN',
   'SCOPE_DENIED',
   'READONLY',
+  'UPSTREAM',
+  'UNSUPPORTED',
   'ABORTED',
   'INTERNAL',
 ];
