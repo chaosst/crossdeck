@@ -28,17 +28,36 @@ export interface EnvPort {
 }
 
 export interface FsPort {
+  /**
+   * 读取文本内容。
+   *
+   * ⚠️ 必须带上限：Agent 读的是用户的**真实项目目录**，一个 2GB 的日志文件
+   *    足以把主进程内存打满。超限时**截断并如实标记**，不要静默返回半截内容
+   *    （静默截断会让调用方把半截文本当成全文，排查成本极高）。
+   */
+  readFile(
+    path: string,
+    opts?: { maxBytes?: number },
+  ): Promise<{ text: string; truncated: boolean }>;
   /** 仅能访问已授权 scope 内路径；越界抛 E_SCOPE_DENIED */
-  readFile(path: string): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
   listDir(path: string): Promise<DirEntry[]>;
   stat(path: string): Promise<FileStat>;
   /**
-   * 订阅文件变更。Web 壳降级为 no-op + 轮询，故返回类型统一为取消订阅函数。
-   * Web 端调用方需自行按 capabilities.has('fs.scope') 决定是否信任实时性。
+   * 订阅文件变更。
+   *
+   * ⚠️ 返回 Promise：越界 / 路径不存在会 **reject**。
+   *    写成「同步返回一个取消函数」看着更顺手，但那样订阅失败只能静默 ——
+   *    调用方会拿着一个永远不会触发的 closer，以为监听已经生效。
+   *    Web 壳降级为轮询（或不支持时 reject），故取消函数仍然是统一的收口方式。
    */
-  watch(path: string, onChange: () => void): () => void;
-  /** 解析真实路径（解 symlink）。PathGuard 靠它做逃逸检测。 */
+  watch(path: string, onChange: () => void): Promise<() => void>;
+  /**
+   * 解析真实路径（解 symlink）。
+   *
+   * ⚠️ 这是给 **PathGuard** 用的底层原语，**不做 scope 校验** ——
+   *    校验本身需要它，套一层会变成递归。其他调用方不要拿它当"读文件入口"。
+   */
   realpath(path: string): Promise<string | null>;
 }
 
