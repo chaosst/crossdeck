@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-10-06T17:03:04.942Z",
+  "updatedAt": "2026-10-06T17:28:09.239Z",
   "mode": "prod",
   "ok": true,
   "electron": "44.4.5",
@@ -10,7 +10,7 @@
     "bridgeMounted": true,
     "systemInfoOk": true,
     "errorCodePreservedAs": "NOT_FOUND",
-    "streamEvents": 32,
+    "streamEvents": 33,
     "streamEndedWithDone": true,
     "streamUnsubscribeWorks": true,
     "unknownChannelRejected": true,
@@ -48,6 +48,31 @@
     "eventsBeforeUnsub": 3,
     "eventsAfterUnsub": 3,
     "unsubscribeWorks": true
+  },
+  "m5Feed": {
+    "verifiedAt": "2026-10-06T17:27:00.352Z",
+    "appVersion": "1.0.0",
+    "packaged": true,
+    "feedUrl": "http://127.0.0.1:61951",
+    "expectedVersion": "9.9.9",
+    "stageTrace": [
+      "checking",
+      "available(9.9.9)",
+      "downloading(0%)",
+      "downloading(100%)",
+      "ready(9.9.9)"
+    ],
+    "rendererFinalStageAttr": "ready",
+    "mainFinalStage": "ready",
+    "rendererHasUpdateCard": true,
+    "httpRequests": [
+      "GET /latest.yml",
+      "GET /crossdeck-Setup-9.9.9.exe.blockmap",
+      "GET /crossdeck-Setup-9.9.9.exe"
+    ],
+    "failures": [],
+    "ok": true,
+    "reportFile": "docs/evidence/update-feed.json"
   },
   "warnings": [],
   "failures": [],
