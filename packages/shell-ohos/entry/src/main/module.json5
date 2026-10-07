@@ -4,6 +4,15 @@
     "type": "entry",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
+    // T2 spike 结论：`ohos.permission.INTERNET` 属于 `system_grant`（安装即授予，无弹窗），
+    // 但**必须显式声明** —— 不声明时 `@ohos.net.http` 的所有请求直接抛
+    // `code=201 Permission denied`（三种 URL 实测一致，见 packages/shell-ohos/spike/）。
+    // 换句话说它不是一个"可选的加固项"，而是网络端口的前置条件。
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      }
+    ],
     // 2in1 = 鸿蒙 PC 形态。本机能否真跑取决于是否下载了对应系统镜像，
     // 见 docs/perf.md / README「已知限制」—— deviceTypes 声明的是意图，不是环境事实。
     "deviceTypes": ["2in1", "tablet", "phone"],
