@@ -34,13 +34,30 @@
    **不返回任何 usage**。所以界面上的字段标签必须改成"字符数"，不能写 "tokens"。
    （又一个"看着正常的错数字"。）
 
+### 🔴 0.3 T3 实测推翻的前提（**需 lead 拍板后才能进轮 1**）
+
+**`/api/resume/chat` 的 `event: token` 不是逐字，整条流在字节层面不是流式。**
+
+- 实测 4 个样本（2 批 × 2 场景）：`token` 帧**恒为 1 帧**，data 是**整段答案**；
+  首字节 ≈ 末字节，**全程静默 1.6–2.8s 后一次性到达**。
+- 根因：`graph-agent-executor.ts:625` 把 agent 节点的 token 增量 yield 成 `outputPreview`
+  （**故意不进最终回答**），`server/index.ts:567` **只写 `chunk.output`** → 真逐字的那份被丢弃。
+- 完整证据：`docs/evidence/navigate-sse/T3-frames-conclusion.md` §4。
+
+**这使"接真实上游 = 真流式"这条立项理由失效。** 三个选项（A 改 navigate 放真 token /
+B 客户端本地重切分 / C 换端点，C 已排除）见结论文件 §4。
+
+⚠️ **在 lead 选定 A 或 B（或 A+B）之前，T5 的映射表、T6-b 的验收、§6 验收总表里
+「逐字显示」那一条都不能定稿。** 其余任务卡（T4 解析器、T2/T9 网络、T10/T11 登录）
+不受影响，可照常推进。
+
 ---
 
 ## 1. 已定决策（不要再讨论，除非 T1 结论推翻它）
 
 | 决策 | 结论 | 理由 |
 |---|---|---|
-| 上游端点 | 只接 `/api/resume/chat` | 权限最低（`requireToken`）、真逐 token 流 |
+| 上游端点 | 只接 `/api/resume/chat` | 权限最低（`requireToken`），另两个端点更差（`plan` 要 admin key、`rag/ask` 不发 done）。**但它不是逐 token 流** —— 见 §0.3 |
 | 壳范围 | 三端全做 | 用户裁决 |
 | 认证 | 应用内登录，**guest 优先** | `POST /api/login/guest` 免密、无校验码 |
 | 端口形状 | **回调式**，不是 `AsyncIterable` | `contract` 已有 `FsPort.watch` / `StreamBus.subscribe` 两个同形状先例且都过了 ArkTS；`AsyncIterable` 在 contract 里**零先例** |
@@ -197,6 +214,16 @@
 - 别把 token 明文写进 `docs/evidence/`（那是进版本库的）→ meta 里只记前 8 位 + 长度。
 
 **交付物**：`docs/evidence/navigate-sse/` 两份文件 + 帧顺序结论。
+
+> **✅ 已完成 2026-10-07** → 结论全文：`docs/evidence/navigate-sse/T3-frames-conclusion.md`
+> 录制器：`scripts/capture-navigate-sse.mjs`（零依赖，可重跑；`NAV_TAG=-run2` 出对照批次）。
+> **帧序与源码一致**：`token → sources → done`，未出现源码外的事件名 → **T5 映射表不必改**。
+> **但有两个必须知道的偏差**：
+> ① 🔴 `token` 帧**恒为 1 帧、内容是整段答案**，整条流末刻一次性到达（见 §0.3，**需拍板**）；
+> ② `sources` 注释说"去重保序"，**实测有重复**（plain 样本 11 项→去重 9 项）→ 客户端自己去重。
+> 附带取证：**不支持 `Authorization: Bearer`**（`?token=`/`body.token`/cookie 才行）、
+> `400`（参数错）与 `401`（鉴权失败）可区分、**token 即 sessionId**（`/api/chat/history` 实证）。
+> 未覆盖：`error` 事件、429 限流、503（resume 缺失）、跨源行为 —— 见结论 §8。
 
 ---
 
@@ -412,6 +439,8 @@
 
 **完成判据**：`pnpm verify:ohos` 全链路通过，截图里能看到**逐字流**
 （照现有 `ohos-shell-stream.jpg` 的做法，不要只截静态首屏）。
+⚠️ 若 §0.3 拍板选 B（本地重切分），"逐字"由本地泵产生，截图仍成立，
+但**文案不能写"上游流式"**。
 
 **备注（范围红利，值得写进 README）**
 本期不需要 `fs.scope` → 文件树整块用能力探测隐藏 → **鸿蒙壳那个"有能力探测、
@@ -537,7 +566,7 @@ T13 在 `shell-web/src/selfcheck.ts` 增量；T14 在 `verify-ohos.mjs` + 鸿蒙
 
 | 项 | 判据 |
 |---|---|
-| 三端都能连真实 navigate 并逐字显示 | 三份截图/报告，且**能看到逐字过程**（不是只有最终态） |
+| 三端都能连真实 navigate 并逐字显示 | 三份截图/报告，且**能看到逐字过程**（不是只有最终态）。⚠️ **依赖 §0.3 的拍板**：上游现状是"一帧到底"，选 B 时这条要改成"能连真实上游 + 本地逐字呈现"，选 A 才保持原判据 |
 | 上游断流不会卡住 | 假 SSE 场景 2 通过 |
 | abort 真的停住 | 上游观察到连接关闭 |
 | 没有"看起来正常的错数字" | `Usage` 标签改对；perf 口径订正 |
