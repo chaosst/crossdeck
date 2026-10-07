@@ -1,4 +1,5 @@
 import type { AgentStreamEvent, Capability, DirEntry, Workspace } from '@crossdeck/contract';
+import type { AgentDeps } from '@crossdeck/core';
 import {
   AgentRuntime,
   ScriptedModel,
@@ -41,16 +42,18 @@ const guard = createPathGuard(workspaces, {
   realpath: (p) => shell.fs.realpath(p),
 });
 
-const agent = new AgentRuntime({
-  deps: {
-    now: () => Date.now(),
-    every: (intervalMs, fn) => {
-      const timer = setInterval(fn, intervalMs);
-      return () => clearInterval(timer);
-    },
-    newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
+const deps: AgentDeps = {
+  now: () => Date.now(),
+  every: (intervalMs, fn) => {
+    const timer = setInterval(fn, intervalMs);
+    return () => clearInterval(timer);
   },
-  model: new ScriptedModel(),
+  newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
+};
+
+const agent = new AgentRuntime({
+  deps,
+  model: new ScriptedModel({ deps }),
 });
 
 // ─────────────────────────────────────────────────────────────

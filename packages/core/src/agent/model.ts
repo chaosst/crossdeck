@@ -6,6 +6,8 @@
  * core 不知道对面是 DeepSeek、ollama 还是本地小模型。
  */
 
+import type { AgentDeps, Cancel } from './deps.js';
+
 export interface ModelRequest {
   readonly sessionId: string;
   readonly prompt: string;
@@ -16,14 +18,32 @@ export interface ModelToolCall {
   readonly args: unknown;
 }
 
-export interface ModelReply {
-  readonly text: string;
-  /** 模型决定先调工具再回答时给出；空数组与缺省等价。 */
-  readonly toolCalls?: readonly ModelToolCall[];
+/**
+ * 流式回调。**主回调都无返回值** —— 这是 T1 spike 实测能过 ArkTS 的形状。
+ * ⚠️ 形参类型必须是 string：T1 的反向断言就是拿 `onChunk(number)` 撞出来的。
+ */
+export interface ModelSink {
+  /** 收到一段文本增量。**是增量，调用方负责追加**。 */
+  onChunk(text: string): void;
+  /**
+   * 模型决定调工具。**可选** —— 只有真会调工具的上游才需要实现它。
+   */
+  onToolCall?(call: ModelToolCall): void;
+  /** 上游正常说完。恰好调用一次。 */
+  onEnd(): void;
+  /** 上游出错。恰好调用一次，与 onEnd 互斥。 */
+  onError(message: string): void;
 }
 
+
 export interface ModelPort {
-  complete(req: ModelRequest): Promise<ModelReply>;
+  /**
+   * 发起一次流式补全。
+   *
+   * @returns 取消函数。调用方 abort / 关窗时**必须真的调用它** ——
+   *   否则 HTTP 连接会悬着，而且没有任何地方能断言"连接已断"。
+   */
+  stream(req: ModelRequest, sink: ModelSink): Cancel; // Cancel 来自 agent/deps.ts
 }
 
 /**
@@ -47,26 +67,71 @@ export interface ScriptedModelOptions {
   readonly reply?: string;
   /** 工具调用返回的内容，会被拼进回复文本（便于断言"工具结果确实被用上了"） */
   readonly toolOutputPrefix?: string;
+  readonly deps: AgentDeps;
 }
 
 export class ScriptedModel implements ModelPort {
   readonly #reply: string;
   readonly #toolOutputPrefix: string;
+  readonly #deps: AgentDeps;
 
-  constructor(opts: ScriptedModelOptions = {}) {
+  constructor(opts: ScriptedModelOptions) {
     this.#reply = opts.reply ?? SCRIPTED_REPLY;
     this.#toolOutputPrefix = opts.toolOutputPrefix ?? '工具返回：';
+    this.#deps = opts.deps
   }
 
-  complete(req: ModelRequest): Promise<ModelReply> {
-    if (req.prompt.includes(TOOL_SCENARIO_MARKER)) {
-      const asked = req.prompt.split(TOOL_SCENARIO_MARKER).join('').trim();
-      const reply: ModelReply = {
-        text: `${this.#toolOutputPrefix}${asked} —— 然后这是我的回答。${this.#reply}`,
-        toolCalls: [{ name: 'echo', args: { text: asked } }],
-      };
-      return Promise.resolve(reply);
+  stream(req: ModelRequest, sink: ModelSink): Cancel {
+    let reply = ''
+    let cancelStream: Cancel | undefined
+
+    // onEnd 的**幂等收口**。为什么必须幂等：
+    //   自然吐完（every 回调里）与外部 cancel() 是**两条都可能到达**的收尾路径。
+    //   壳在 run 收尾 / 关窗时都会调一次 cancel()，而它无从知道"其实已经自然结束了"
+    //   → 没有这个幂等位，onEnd 就会发两次，直接违反 sink 契约
+    //   （"恰好一次、与 onError 互斥"）。实测过：3 字符回复先自然结束再 cancel() → onEnd=2。
+    let ended = false
+    const finish = (): void => {
+      if (ended) return
+      ended = true
+      sink.onEnd()
     }
-    return Promise.resolve({ text: this.#reply });
+
+    try {
+      reply = this.#reply
+      if (req.prompt.includes(TOOL_SCENARIO_MARKER)) {
+        const asked = req.prompt.split(TOOL_SCENARIO_MARKER).join('').trim()
+        reply = `${this.#toolOutputPrefix}${asked} —— 然后这是我的回答。${this.#reply}`
+        sink.onToolCall?.({ name: 'echo', args: { text: asked } })
+      }
+
+      // 空回复：没有字可滴，但契约要求"恰好一个终态" —— 直接收尾，别让定时器空转。
+      if (reply.length === 0) {
+        finish()
+        return () => {}
+      }
+
+      cancelStream = this.#deps.every(10, () => {
+        const str = reply.slice(0, 3)
+        reply = reply.slice(3)
+        sink.onChunk(str)
+        if (reply === '') {
+          // 切完就**自摘调度**，否则每 10ms 吐一个空串、永不停止（定时器泄漏）。
+          cancelStream?.()
+          finish()
+        }
+      })
+    } catch (err) {
+      // 就地取消息，不引入外部工具类（core 里多一个文件就多一份依赖面）。
+      sink.onError(err instanceof Error ? err.message : String(err))
+    }
+
+    // 取消函数**只负责"停住上游"，不碰 sink**。
+    //   "取消"（我不听了）与"结束"（上游说完了）是两回事：abort 时终态应由 runtime 决定，
+    //   它才知道这是中断（error/ABORTED）还是正常收尾。这里若自作主张 onEnd，
+    //   runtime 的 abort 再发一个 error → 两个终态。
+    return () => {
+      cancelStream?.()
+    }
   }
 }

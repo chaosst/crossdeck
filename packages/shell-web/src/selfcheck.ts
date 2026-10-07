@@ -280,16 +280,17 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
   // ───────────────────────────────────────────────────────────
   const sessions = new SessionStore();
   const session = sessions.create({ title: 'web-selfcheck' });
-  const agent = new AgentRuntime({
-    deps: {
-      now: () => Date.now(),
-      every: (ms, fn) => {
-        const t = setInterval(fn, ms);
-        return () => clearInterval(t);
-      },
-      newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
+  const agentDeps: AgentDeps = {
+    now: () => Date.now(),
+    every: (ms, fn) => {
+      const t = setInterval(fn, ms);
+      return () => clearInterval(t);
     },
-    model: new ScriptedModel(),
+    newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
+  };
+  const agent = new AgentRuntime({
+    deps: agentDeps,
+    model: new ScriptedModel({ deps: agentDeps }),
   });
 
   try {

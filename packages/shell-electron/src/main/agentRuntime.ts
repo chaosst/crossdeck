@@ -1,6 +1,7 @@
 import { webContents } from 'electron';
 import { IPC } from '@crossdeck/contract';
 import type { AgentStreamEvent } from '@crossdeck/contract';
+import type { AgentDeps } from '@crossdeck/core';
 import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
 
 /**
@@ -18,17 +19,22 @@ import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
  * 三端壳的这三段几乎一样，这正是分层的收益。
  */
 
-const runtime = new AgentRuntime({
-  deps: {
-    now: () => Date.now(),
-    every: (intervalMs, fn) => {
-      const timer = setInterval(fn, intervalMs);
-      return () => clearInterval(timer);
-    },
-    newId: (prefix) =>
-      `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+// 提成变量：AgentRuntime 与 ScriptedModel **共用同一份 deps**。
+// 为什么必须共用：`ScriptedModel` 靠 `deps.every` 滴流，它的时钟必须与 runtime 的
+// 是同一个 —— 否则测试里注入的手动时钟只推进一半，滴流与 flush 的先后就不可控了。
+const deps: AgentDeps = {
+  now: () => Date.now(),
+  every: (intervalMs, fn) => {
+    const timer = setInterval(fn, intervalMs);
+    return () => clearInterval(timer);
   },
-  model: new ScriptedModel(),
+  newId: (prefix) =>
+    `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+};
+
+const runtime = new AgentRuntime({
+  deps,
+  model: new ScriptedModel({ deps }),
 });
 
 /** runId → 发起它的窗口。事件要回到"自己那个窗口"，不能广播给所有人。 */
