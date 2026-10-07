@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "crossdeck HarmonyOS shell"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "crossdeck entry ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "crossdeck"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+/**
+ * M6-0 spike · 实验 B：同一份 `types.ts` 换成 `.ets` 后缀。
+ *
+ * 实验 A 已经证明编译**真的在 type-check**（跨文件追到了 capability.ts 的 Platform）。
+ * 那为什么 `types.ts` 里那些 TS 高级类型（条件类型 / 索引访问 / 映射键）能过？
+ *
+ * 假设：**ArkTS 对 `.ts` 与 `.ets` 的后缀待遇不同** ——
+ *   `.ts` 走 TypeScript 规则（宽松，允许类型体操），
+ *   `.ets` 走 ArkTS 规则（受限子集，禁条件类型/any/结构化类型）。
+ *
+ * 这个文件就是把 `types.ts` 原样改成 `.ets` 的对照组：
+ *   若它编译不过 → 假设成立，结论是「contract 必须以 .ts 形态被引入」
+ *   若它也能过   → ArkTS 比预期宽松，结论可以更乐观
+ *
+ * 注意 import 说明符去掉了 `.js` 扩展名 —— 因为这一轮要单独考察**语法**，
+ * 不能让扩展名解析的问题混进来（那是实验 C 的事）。
+ */
+import type { IpcInvokeMap, InvokeChannel } from '../contract/invoke-map';
+import type { PushChannel, PushPayload } from '../contract/push-map';
+
+export interface HandlerCtx {
+  readonly senderWindowId: number;
+  isAborted(runId: string): boolean;
+}
+
+export type InvokeHandler<K extends InvokeChannel> = (
+  req: IpcInvokeMap[K]['req'],
+  ctx: HandlerCtx,
+) => Promise<IpcInvokeMap[K]['res']>;
+
+/** ← 条件类型就在这一行 */
+export type InvokeArgs<K extends InvokeChannel> =
+  IpcInvokeMap[K]['req'] extends void ? [] : [req: IpcInvokeMap[K]['req']];
+
+export interface BridgeApi {
+  invoke<K extends InvokeChannel>(
+    channel: K,
+    ...args: InvokeArgs<K>
+  ): Promise<IpcInvokeMap[K]['res']>;
+
+  on<K extends PushChannel>(
+    channel: K,
+    handler: (payload: PushPayload<K>) => void,
+  ): () => void;
+}

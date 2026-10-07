@@ -24,3 +24,30 @@ _tmp_*
 
 # 一次性排查产物（磁盘占用统计之类），别跟着仓库走
 _diag.txt
+
+# 鸿蒙壳（packages/shell-ohos）—— DevEco / hvigor 工具链的本地产物。
+#
+# 这里没有重复写 `entry/build/`：git 的 `build/` 模式不带斜杠前缀，
+# 会匹配**任意层级**名为 build 的目录，那一条已经覆盖它了。
+# `oh_modules/` 与 `local.properties` 是 ohpm 的依赖目录与本地 SDK 路径，
+# 与 node_modules / .env 同类：机器相关，别人的路径对自己是噪音。
+.hvigor/
+oh_modules/
+local.properties
+
+# ⚠️ 同步进鸿蒙工程的 contract/core **源码副本**不进版本库。
+#
+# 它们是 `scripts/sync-shared.mjs` 的产物，事实源是 packages/contract 与
+# packages/core。提交副本 = 版本库里同时存在两份源码，而它们会漂移 ——
+# 漂移是静默的：在 core 里修好的 bug，鸿蒙壳会继续跑旧版本。
+# 所以 clone 之后第一次用 DevEco 打开前，先跑一次 `pnpm sync:ohos`
+# （`pnpm verify:ohos` 会自动带上这一步）。
+#
+# 注意只忽略这两个子目录：同一个 shared/ 下的 `ports.ets` 与 `probe/`
+# 是手写的，要进版本库。
+packages/shell-ohos/entry/src/main/ets/shared/contract/
+packages/shell-ohos/entry/src/main/ets/shared/core/
+
+# 鸿蒙验证脚本的临时产物：hdc shell uitest dumpLayout 拉回来的 UI 树，
+# 用来算控件的真实 bounds（见 packages/shell-ohos/scripts/verify-ohos.mjs）。
+.ohos-layout.json

@@ -1,0 +1,7 @@
+{
+  // 与 hvigor wrapper 的 modelVersion 对齐（DevEco 6.x）
+  "modelVersion": "6.1.1",
+  "description": "crossdeck HarmonyOS shell — 同题对照的另一半：同一份 contract/core，换一个壳",
+  "dependencies": {},
+  "devDependencies": {}
+}
