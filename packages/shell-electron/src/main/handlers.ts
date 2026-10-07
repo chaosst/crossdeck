@@ -6,6 +6,7 @@ import type {
   Capability,
   DirEntry,
   FileStat,
+  PerfSnapshot,
   SessionMeta,
   SystemInfo,
   Workspace,
@@ -14,6 +15,7 @@ import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } fro
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
+import { notePerfSample, readPerfSnapshot } from './perf.js';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
 
@@ -222,6 +224,15 @@ export function registerHandlers(): number {
   defineInvoke(IPC.updateDownload, async (): Promise<void> => downloadUpdate());
 
   defineInvoke(IPC.updateInstall, async (): Promise<void> => installUpdate());
+
+  // ── 性能采样（M6-1）──────────────────────────────────────
+  // 一次调用两件事：把渲染层带上来的采样点记账，再返回当前快照。
+  // 分开成两条通道会让调用方必须记住"先报再读"，而顺序错了不会报错 ——
+  // 只会得到一个缺字段的快照。
+  defineInvoke(IPC.perfSample, async (req, ctx): Promise<PerfSnapshot> => {
+    notePerfSample(req);
+    return readPerfSnapshot(ctx.senderWindowId);
+  });
 
   return registeredChannels().length;
 }

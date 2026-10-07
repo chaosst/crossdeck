@@ -1,7 +1,10 @@
 import { app, BrowserWindow } from 'electron';
 import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { IPC } from '@crossdeck/contract';
+import type { PerfSnapshot } from '@crossdeck/contract';
 import { droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
+import { resetPerfForSelfCheck } from './perf.js';
 import { runtimeConfig } from './runtimeConfig.js';
 import { currentUpdateStatus, resetUpdateStateForSelfCheck } from './updater.js';
 
@@ -239,6 +242,12 @@ export interface SelfCheckReport {
     droppedAfterTerminal: number;
     undeliveredTerminal: number;
   };
+  /**
+   * 性能快照（M6-1）。**不达标不算失败** —— 把"未达标"混进 `failures`
+   * 会让自检变成一场"为了变绿而调参"的游戏，指标就失去度量意义。
+   * 不达标写进 `docs/perf.md` 的改进项；`null` = 整块没采到（会进 warnings）。
+   */
+  perf: PerfSnapshot | null;
   /** 不判失败、但必须被看见的事项（例如平台不允许建 symlink） */
   warnings: string[];
   consoleErrors: string[];
@@ -637,6 +646,10 @@ export async function runSelfCheck(
   const consoleErrors: string[] = [];
   win.webContents.on('console-message', collectConsole(consoleErrors));
 
+  // 两个"只记第一次"的采样点必须复位（见 perf.ts）：否则在同一个进程里跑第二遍
+  // 会复用上一遍的首帧时刻，给出一个莫名其妙的小数字 —— 而且它不会报错。
+  resetPerfForSelfCheck();
+
   const failures: string[] = [];
   const warnings: string[] = [];
   let domStatus: string | null = null;
@@ -890,6 +903,30 @@ export async function runSelfCheck(
     );
   }
 
+  // ── M6-1 性能快照 ─────────────────────────────────────────
+  //
+  // 走**渲染层的 bridge** 调 —— 与用户路径完全相同的通道，不是从 main 内部抄近路。
+  // 首帧与帧率只有渲染层测得到（它才看得见 rAF），这里是取回汇聚结果。
+  let perf: PerfSnapshot | null = null;
+  try {
+    perf = (await win.webContents.executeJavaScript(
+      `window.bridge.invoke(${JSON.stringify(IPC.perfSample)}, {})`,
+    )) as PerfSnapshot;
+  } catch (err) {
+    warnings.push(`性能采样失败：${String(err)}`);
+  }
+  if (perf !== null) {
+    // 「没测到」要单独说，不能与「数值很小」混同 ——
+    // 0ms 冷启动读起来像性能奇迹，实际是根本没测。这类静默失败最值得显式化。
+    if (perf.coldStartMs === 0) warnings.push('冷启动未测到（渲染层没有上报首帧）');
+    if (perf.streamFps === 0) warnings.push('流式帧率未测到（本次自检没跑流式）');
+    if (perf.rendererRssBytes === 0) warnings.push('渲染进程内存未测到（拿不到该窗口的 pid 指标）');
+    console.log(
+      `[selfcheck] 性能：冷启动 ${perf.coldStartMs}ms / main ${(perf.mainRssBytes / 1048576).toFixed(1)}MB` +
+        ` / renderer ${(perf.rendererRssBytes / 1048576).toFixed(1)}MB / ${perf.streamFps}fps`,
+    );
+  }
+
   let screenshot: string | null = null;
   try {
     mkdirSync(outDir, { recursive: true });
@@ -923,6 +960,7 @@ export async function runSelfCheck(
       droppedAfterTerminal: dropped,
       undeliveredTerminal: undelivered,
     },
+    perf,
     warnings,
     consoleErrors: criticalConsoleError,
     screenshot,

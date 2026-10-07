@@ -2,6 +2,7 @@ import { IPC } from './ipc.js';
 import type { DirEntry, FileStat, SessionMeta, SystemInfo } from './entities.js';
 import type { WindowKind } from './capability.js';
 import type { UpdateInfo } from './update.js';
+import type { PerfSampleInput, PerfSnapshot } from './perf.js';
 import type { Workspace } from './workspace.js';
 
 /**
@@ -44,6 +45,13 @@ export interface IpcInvokeMap {
   /** 开始下载。真正的进度经 updateStatus 推送，这里只回"已受理"。 */
   [IPC.updateDownload]: { req: void; res: void };
   [IPC.updateInstall]: { req: void; res: void };
+
+  /**
+   * 性能采样。**注意 req 不是 void** —— 渲染层要在首帧/流式结束时
+   * 把只有它测得到的数字带上来（见 perf.ts 里关于"帧率只能在渲染层测"的注释）。
+   * 调用侧只读快照时传 `{}` 即可。
+   */
+  [IPC.perfSample]: { req: PerfSampleInput; res: PerfSnapshot };
 }
 
 /** 走 invoke 的通道名（单向推送通道已被排除）。 */

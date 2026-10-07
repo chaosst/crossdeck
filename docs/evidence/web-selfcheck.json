@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-10-06T15:15:54.167Z",
+  "ranAt": "2026-10-07T03:53:09.556Z",
   "shell": "web",
   "ok": true,
   "platform": "web",
@@ -106,12 +106,12 @@
     "streamUsage": {
       "promptTokens": 11,
       "completionTokens": 130,
-      "totalMs": 589,
+      "totalMs": 542,
       "mergedChunks": 0,
-      "ttftMs": 71
+      "ttftMs": 18
     },
     "agent.usageHasMergedChunks": 0,
-    "agent.usageHasTtft": 71,
+    "agent.usageHasTtft": 18,
     "agent.completionTokensEqualsTextLength": "130 vs 130",
     "agent.noEventsAfterTerminal": 0,
     "agent.runDeregistered": 0,
@@ -184,8 +184,8 @@
     "core.pumpResumes": "abcdefghij",
     "core.pumpAcceptedChars": 10,
     "ui.probeTargetsPresent": true,
-    "uiStreamMeta": "事件序列：start×1 → token×33 → done×1 ｜ 首 token 17ms ｜ 共 541ms ｜ 130 字符 ｜ 合并 0 次",
-    "ui.streamCardRan": "事件序列：start×1 → token×33 → done×1 ｜ 首 token 17ms ｜ 共 541ms ｜ 130 字符 ｜ 合并 0 次",
+    "uiStreamMeta": "事件序列：start×1 → token×33 → done×1 ｜ 首 token 16ms ｜ 共 540ms ｜ 130 字符 ｜ 合并 0 次",
+    "ui.streamCardRan": "事件序列：start×1 → token×33 → done×1 ｜ 首 token 16ms ｜ 共 540ms ｜ 130 字符 ｜ 合并 0 次",
     "uiEntryCount": 2,
     "ui.treeRendered": 2,
     "uiEscapeMessage": "[SCOPE_DENIED:OUT_OF_SCOPE] 目标路径未通过校验",
@@ -199,7 +199,7 @@
     "checked": true,
     "source": "packages/core/dist/index.js",
     "reportedBindings": 11,
-    "packageExportCount": 20,
+    "packageExportCount": 28,
     "missing": []
   },
   "screenshot": "docs/evidence/web-shell.png"

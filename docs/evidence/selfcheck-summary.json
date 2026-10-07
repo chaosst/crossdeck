@@ -1,11 +1,11 @@
 {
-  "updatedAt": "2026-10-06T17:28:09.239Z",
+  "updatedAt": "2026-10-07T03:54:08.539Z",
   "mode": "prod",
   "ok": true,
   "electron": "44.4.5",
   "chrome": "152.0.7977.130",
   "node": "24.21.0",
-  "registeredChannelCount": 18,
+  "registeredChannelCount": 19,
   "assertionSummary": {
     "bridgeMounted": true,
     "systemInfoOk": true,
@@ -73,6 +73,133 @@
     "failures": [],
     "ok": true,
     "reportFile": "docs/evidence/update-feed.json"
+  },
+  "m6": {
+    "measuredAt": "2026-10-07T03:54:08.539Z",
+    "coldStartMs": 322,
+    "mainRssBytes": 148455424,
+    "rendererRssBytes": 42741760,
+    "streamFps": 179,
+    "streamTtftMs": 27,
+    "installerBytes": 102870585,
+    "targets": {
+      "coldStartMs": 1200,
+      "mainRssBytes": 157286400,
+      "rendererRssBytes": 262144000,
+      "streamTtftMs": 300,
+      "streamFps": 55,
+      "installerBytes": 104857600
+    },
+    "verdicts": {
+      "coldStartMs": "pass",
+      "mainRssBytes": "pass",
+      "rendererRssBytes": "pass",
+      "streamFps": "pass",
+      "streamTtftMs": "pass",
+      "installerBytes": "pass"
+    },
+    "sources": {
+      "coldStartMs": "docs/evidence/selfcheck-prod.json · perf.coldStartMs",
+      "mainRssBytes": "docs/evidence/selfcheck-prod.json · perf.mainRssBytes",
+      "rendererRssBytes": "docs/evidence/selfcheck-prod.json · perf.rendererRssBytes",
+      "streamFps": "docs/evidence/selfcheck-prod.json · perf.streamFps",
+      "streamTtftMs": "docs/evidence/selfcheck-prod.json · probe.streamUsage.ttftMs",
+      "installerBytes": "packages/shell-electron/dist/pack/crossdeck-Setup-1.0.0.exe"
+    },
+    "doc": "docs/perf.md"
+  },
+  "m6Ohos": {
+    "verifiedAt": "2026-10-07T03:48:07.132Z",
+    "ok": true,
+    "device": "127.0.0.1:5555",
+    "bundle": "site.crossdeck.app",
+    "toolchain": {
+      "ok": true,
+      "detail": "DevEco @ D:/software/DevEco Studio"
+    },
+    "deviceOnline": {
+      "ok": true,
+      "detail": "127.0.0.1:5555（x86_64）"
+    },
+    "syncShared": {
+      "ok": true,
+      "detail": "  提示：产物是只读副本，不要直接改；改 packages/ 下的源再跑一次本脚本。"
+    },
+    "buildHap": {
+      "ok": true,
+      "detail": "BUILD SUCCESSFUL"
+    },
+    "hapSize": {
+      "ok": true,
+      "detail": "193.7 KB"
+    },
+    "install": {
+      "ok": true,
+      "detail": "install bundle successfully"
+    },
+    "start": {
+      "ok": true,
+      "detail": "start ability successfully"
+    },
+    "screenshots": [
+      "ohos-shell.jpg",
+      "ohos-shell-stream.jpg",
+      "ohos-shell-tool.jpg"
+    ],
+    "steps": [
+      {
+        "name": "工具链",
+        "ok": true,
+        "detail": "DevEco @ D:/software/DevEco Studio"
+      },
+      {
+        "name": "设备在线",
+        "ok": true,
+        "detail": "127.0.0.1:5555（x86_64）"
+      },
+      {
+        "name": "同步 contract/core",
+        "ok": true,
+        "detail": "  提示：产物是只读副本，不要直接改；改 packages/ 下的源再跑一次本脚本。"
+      },
+      {
+        "name": "hvigorw assembleHap",
+        "ok": true,
+        "detail": "BUILD SUCCESSFUL"
+      },
+      {
+        "name": "HAP 产物",
+        "ok": true,
+        "detail": "193.7 KB"
+      },
+      {
+        "name": "hdc install",
+        "ok": true,
+        "detail": "install bundle successfully"
+      },
+      {
+        "name": "aa start",
+        "ok": true,
+        "detail": "start ability successfully"
+      },
+      {
+        "name": "截图 · 首屏",
+        "ok": true,
+        "detail": "246.9 KB → docs/screenshots/ohos-shell.jpg"
+      },
+      {
+        "name": "点击「发送」→ ohos-shell-stream.jpg",
+        "ok": true,
+        "detail": "280.2 KB → docs/screenshots/ohos-shell-stream.jpg"
+      },
+      {
+        "name": "点击「带工具」→ ohos-shell-tool.jpg",
+        "ok": true,
+        "detail": "284.2 KB → docs/screenshots/ohos-shell-tool.jpg"
+      }
+    ],
+    "failures": [],
+    "reportFile": "docs/evidence/ohos-selfcheck.json"
   },
   "warnings": [],
   "failures": [],

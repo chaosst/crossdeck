@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { assertNever } from '@crossdeck/contract';
+import { PERF_TARGETS, assertNever, formatBytes, meetsTarget } from '@crossdeck/contract';
 import type {
   AgentStreamEvent,
   DirEntry,
+  PerfSnapshot,
   SessionMeta,
   SystemInfo,
   UpdateStatus,
@@ -28,7 +29,10 @@ import {
   onUpdateStatus,
   openWindow,
   readFileText,
+  samplePerf,
   startAgentRun,
+  startStreamFpsProbe,
+  stopStreamFpsProbe,
 } from './api';
 
 type BootStatus = 'loading' | 'ready' | 'error';
@@ -78,6 +82,9 @@ export default function App() {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
 
+  // ── M6-1：性能量化 ──
+  const [perf, setPerf] = useState<PerfSnapshot | null>(null);
+
   /**
    * 只有 available / downloading / ready 三种状态带 info。
    * 提成局部变量而不是在 JSX 里写 `'info' in update`：`in` 收窄在 JSX 的属性访问
@@ -102,6 +109,18 @@ export default function App() {
         setInfo(systemInfo);
         setSessions(list);
         setStatus('ready');
+        // 「首帧可交互」必须等 DOM 真的画出来 —— 直接用 setStatus 之后的时刻
+        // 报的是"数据到了"，不是"用户看得到"。两层 rAF：第一层等本次 commit
+        // 落地，第二层等它被绘制。这也是 main 侧冷启动计时的终点。
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            void samplePerf({ firstPaint: true })
+              .then(setPerf)
+              .catch(() => {
+                /* 采样失败不该影响启动 —— 报告里体现为"没测到"即可 */
+              });
+          });
+        });
       } catch (err) {
         if (cancelled) return;
         setBootError(describeIpcError(err).text);
@@ -122,6 +141,8 @@ export default function App() {
           setUsage(null);
           setPaused(false);
           setRunningRunId(event.runId);
+          // 帧率探针跟着流一起起停：测的就是"这段流式期间画面跟不跟得上"
+          startStreamFpsProbe();
           break;
         case 'token':
           setStreamText((prev) => prev + event.text);
@@ -135,11 +156,18 @@ export default function App() {
           setRunningRunId(null);
           setPaused(false);
           setUsage(event.usage);
+          // 终态才停探针并上报 —— 中途停会把"半程帧率"当成整段读数
+          void samplePerf({ streamFps: stopStreamFpsProbe() })
+            .then(setPerf)
+            .catch(() => {});
           break;
         case 'error':
           setRunningRunId(null);
           setPaused(false);
           setActionError(`[${event.code}] ${event.message}`);
+          void samplePerf({ streamFps: stopStreamFpsProbe() })
+            .then(setPerf)
+            .catch(() => {});
           break;
         default:
           // 契约里新增事件类型而这里忘了处理 → 编译期就报错，不会静默漏掉
@@ -702,6 +730,40 @@ export default function App() {
           </>
         )}
 
+        {perf !== null && (
+          <Card title="性能量化（M6-1）">
+            <p className="text-[12px] text-[#8a857c]">
+              冷启动从 main 模块加载算到首帧可交互；内存一项来自主进程、一项来自渲染进程；
+              帧率是流式期间用 requestAnimationFrame 实测（0 表示还没跑过流式）。
+              目标值定义在 contract 的 <code>PERF_TARGETS</code>，完整报告见 docs/perf.md。
+            </p>
+            <table className="mt-3 w-full text-[12px]" data-testid="perf-snapshot">
+              <thead>
+                <tr className="text-left text-[#8a857c]">
+                  <th className="py-1 font-normal">指标</th>
+                  <th className="py-1 font-normal">实测</th>
+                  <th className="py-1 font-normal">目标</th>
+                  <th className="py-1 font-normal">判定</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#33302b]">
+                {perfRows(perf, usage?.ttftMs ?? null).map((row) => (
+                  <tr key={row.metric} className="border-t border-[#efece5]">
+                    <td className="py-1">{row.label}</td>
+                    <td className="py-1 font-mono" data-metric={row.metric}>
+                      {row.actual}
+                    </td>
+                    <td className="py-1 font-mono text-[#8a857c]">{row.target}</td>
+                    <td className={row.ok ? 'py-1 text-[#1f6b3a]' : 'py-1 text-[#a12626]'}>
+                      {row.ok ? '达标' : '未达标'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        )}
+
         {kind !== 'main' && (
           <Card title={`${kind} 窗口`}>
             <p className="text-[13px] text-[#5c5750]">
@@ -728,6 +790,61 @@ export default function App() {
  * 编译期就报错，而不是在界面上静默漏掉一整个状态 ——
  * 「永远转圈」这类 bug 有一半就是这么来的。
  */
+/**
+ * 把快照折成表格行。
+ *
+ * 「未达标」**不是错误**，而是一条要如实展示的事实 —— 所以它是红字不是异常。
+ * 面试场景里最没价值的是一张全绿的假表；有价值的是"这一项为什么没达标"。
+ */
+function perfRows(
+  p: PerfSnapshot,
+  ttftMs: number | null,
+): { metric: string; label: string; actual: string; target: string; ok: boolean }[] {
+  const rows: { metric: string; label: string; actual: string; target: string; ok: boolean }[] = [
+    {
+      metric: 'coldStartMs',
+      label: '冷启动到首帧可交互',
+      actual: p.coldStartMs === 0 ? '未测到' : `${p.coldStartMs} ms`,
+      target: `< ${PERF_TARGETS.coldStartMs} ms`,
+      ok: p.coldStartMs !== 0 && meetsTarget('coldStartMs', p.coldStartMs),
+    },
+    {
+      metric: 'mainRssBytes',
+      label: '主进程常驻内存',
+      actual: formatBytes(p.mainRssBytes),
+      target: `< ${formatBytes(PERF_TARGETS.mainRssBytes)}`,
+      ok: meetsTarget('mainRssBytes', p.mainRssBytes),
+    },
+    {
+      metric: 'rendererRssBytes',
+      label: '渲染进程内存',
+      actual: p.rendererRssBytes === 0 ? '未测到' : formatBytes(p.rendererRssBytes),
+      target: `< ${formatBytes(PERF_TARGETS.rendererRssBytes)}`,
+      ok: p.rendererRssBytes !== 0 && meetsTarget('rendererRssBytes', p.rendererRssBytes),
+    },
+    {
+      metric: 'streamFps',
+      label: '流式期间帧率',
+      actual: p.streamFps === 0 ? '未测到' : `${p.streamFps} fps`,
+      target: `≥ ${PERF_TARGETS.streamFps} fps`,
+      ok: p.streamFps !== 0 && meetsTarget('streamFps', p.streamFps),
+    },
+  ];
+
+  // 首 token 延迟不进 PerfSnapshot：它是一次 run 的属性（usage），不是进程的属性。
+  // 但报告要的 6 项指标里有它，所以在这里并进来。
+  if (ttftMs !== null) {
+    rows.splice(3, 0, {
+      metric: 'streamTtftMs',
+      label: '流式首 token 延迟',
+      actual: `${ttftMs} ms`,
+      target: `< ${PERF_TARGETS.streamTtftMs} ms`,
+      ok: meetsTarget('streamTtftMs', ttftMs),
+    });
+  }
+  return rows;
+}
+
 function updateLine(s: UpdateStatus | null): string {
   if (s === null) return '不知道有没有新版本 —— 还没查过。';
   switch (s.stage) {

@@ -3,6 +3,8 @@ import type {
   AgentStreamEvent,
   DirEntry,
   IpcErrorCode,
+  PerfSampleInput,
+  PerfSnapshot,
   SessionMeta,
   SystemInfo,
   UpdateInfo,
@@ -163,4 +165,46 @@ export async function installUpdate(): Promise<void> {
 /** 订阅更新进度。返回取消函数 —— 与 agent 流同一个理由：卸载不摘会泄漏。 */
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): () => void {
   return window.bridge.on(IPC.updateStatus, handler);
+}
+
+// ── M6-1：性能采样 ───────────────────────────────────────────
+// 首帧与帧率只有渲染层测得到，所以它们由这里**报上去**，而不是由 main 猜。
+// 时钟不用管：main 用的是自己的 Date.now()，这里只负责说"这件事刚刚发生了"。
+
+export async function samplePerf(input: PerfSampleInput = {}): Promise<PerfSnapshot> {
+  return window.bridge.invoke(IPC.perfSample, input);
+}
+
+/**
+ * 帧率探针 —— 流式期间实测 requestAnimationFrame 的回调频率。
+ *
+ * 为什么不用 `setInterval(…, 16)` 数次数：那测的是**定时器**有没有按时触发，
+ * 与画面有没有真的刷出来是两件事。rAF 的回调频率直接等于浏览器愿意给的帧机会，
+ * 掉帧时它会同步下降 —— 这才是"卡不卡"的判据。
+ *
+ * 探针是模块级的（不挂在组件上）：它跨越多次 render，且必须能在事件回调里
+ * 同步启停 —— 放进 state 会让 'done' 那一刻读到旧值。
+ */
+let fpsProbe: { frames: number; startedAt: number; raf: number } | null = null;
+
+export function startStreamFpsProbe(): void {
+  stopStreamFpsProbe(); // 上一次没停干净时先收尾，避免两个探针同时计数
+  const probe = { frames: 0, startedAt: performance.now(), raf: 0 };
+  const tick = (): void => {
+    probe.frames += 1;
+    probe.raf = requestAnimationFrame(tick);
+  };
+  probe.raf = requestAnimationFrame(tick);
+  fpsProbe = probe;
+}
+
+/** 停止探针并返回实测帧率（没在测时返回 0 —— 语义是"没测到"，不是"帧率 0"）。 */
+export function stopStreamFpsProbe(): number {
+  const probe = fpsProbe;
+  fpsProbe = null;
+  if (probe === null) return 0;
+  cancelAnimationFrame(probe.raf);
+  const elapsed = performance.now() - probe.startedAt;
+  if (elapsed <= 0) return 0;
+  return Math.round((probe.frames * 1000) / elapsed);
 }

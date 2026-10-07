@@ -16,4 +16,5 @@ export * from './push-map.js';
 export * from './types.js';
 export * from './workspace.js';
 export * from './update.js';
+export * from './perf.js';
 export * from './error.js';
