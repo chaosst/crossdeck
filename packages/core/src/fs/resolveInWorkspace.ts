@@ -49,7 +49,17 @@ export async function resolveInWorkspace(
   // "当前工作区"是什么。不传的话，A 工作区里的 `../` 恰好落进同样已授权的
   // B 工作区时会被放行 —— 边界在用户眼里就消失了。
   const decision = await guard.check(joined, { withinWorkspaceId: workspaceId });
-  if (!decision.allowed) return { ok: false, reason: decision.reason };
-
+  // ⚠️ 这里刻意用 `'reason' in decision` 而不是 `if (decision.allowed)` / `if (!decision.allowed)`。
+  //
+  //    两种写法在 tsc 下完全等价，但 **ArkTS（鸿蒙壳）不支持以布尔字面量
+  //    （`allowed: true` / `allowed: false`）为判别式的联合收窄** —— 实测两种
+  //    方向都报 `Property 'reason' does not exist on type 'PathDecision'`（M6-0 发现）。
+  //    `in` 窄化是属性存在性判定，不受判别式类型限制，两边都认。
+  //
+  //    契约没变、语义没变。这条注释留在 core 里，是因为**下一个写跨端分支的人
+  //    会在这里再踩一次** —— 编译器只会在鸿蒙那次构建里报错。
+  if ('reason' in decision) {
+    return { ok: false, reason: decision.reason };
+  }
   return { ok: true, absolute: decision.resolved, workspace };
 }
