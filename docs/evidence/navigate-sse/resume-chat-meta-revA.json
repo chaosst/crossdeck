@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-10-07T05:08:51.839Z",
+  "ranAt": "2026-10-07T07:02:09.394Z",
   "baseUrl": "http://127.0.0.1:3001",
   "node": "v22.22.2",
   "note": "本文件由 scripts/capture-navigate-sse.mjs 生成。raw 文件是原始字节，未做任何整理；token 只记录前 8 位与长度。",
@@ -11,20 +11,27 @@
       "transport": "cookie",
       "reproducibleCurl": "curl -N --noproxy '*' -X POST -H 'Content-Type: application/json' -b \"navigate_token=$TOK\" -d '{\"question\":\"…\"}' http://127.0.0.1:3001/api/resume/chat",
       "status": 200,
-      "totalMs": 1645,
-      "chunkCount": 3,
-      "frameOrder": [
+      "totalMs": 2153,
+      "chunkCount": 107,
+      "frameOrderKinds": [
         "token",
         "sources",
         "done"
       ],
-      "tokenFrameCount": 1,
+      "frameCount": 107,
+      "tokenFrameCount": 105,
+      "tokenChunkCount": 105,
+      "streamSpanMs": 492,
+      "isEmptyPayload": false,
+      "isEmptyOnlyPayload": false,
+      "incrementalMatchesAuthoritative": true,
+      "hasAuthoritativeAnswer": false,
       "hasSources": true,
-      "sourcesCount": 2,
-      "firstTokenAtMs": 1644,
-      "doneFrameAtMs": 1645,
-      "rawFile": "docs/evidence/navigate-sse/resume-chat-plain-run2.raw.txt",
-      "chunksFile": "docs/evidence/navigate-sse/resume-chat-plain-run2.chunks.json"
+      "sourcesCount": 3,
+      "firstTokenAtMs": 1648,
+      "doneFrameAtMs": 2153,
+      "rawFile": "docs/evidence/navigate-sse/resume-chat-plain-revA.raw.txt",
+      "chunksFile": "docs/evidence/navigate-sse/resume-chat-plain-revA.chunks.json"
     },
     {
       "name": "retrieval",
@@ -33,20 +40,27 @@
       "transport": "query",
       "reproducibleCurl": "curl -N --noproxy '*' -X POST -H 'Content-Type: application/json' -d '{\"question\":\"…\"}' \"http://127.0.0.1:3001/api/resume/chat?token=$TOK\"",
       "status": 200,
-      "totalMs": 2470,
-      "chunkCount": 3,
-      "frameOrder": [
+      "totalMs": 3100,
+      "chunkCount": 326,
+      "frameOrderKinds": [
         "token",
         "sources",
         "done"
       ],
-      "tokenFrameCount": 1,
+      "frameCount": 326,
+      "tokenFrameCount": 324,
+      "tokenChunkCount": 324,
+      "streamSpanMs": 1115,
+      "isEmptyPayload": false,
+      "isEmptyOnlyPayload": false,
+      "incrementalMatchesAuthoritative": true,
+      "hasAuthoritativeAnswer": false,
       "hasSources": true,
       "sourcesCount": 3,
-      "firstTokenAtMs": 2469,
-      "doneFrameAtMs": 2469,
-      "rawFile": "docs/evidence/navigate-sse/resume-chat-retrieval-run2.raw.txt",
-      "chunksFile": "docs/evidence/navigate-sse/resume-chat-retrieval-run2.chunks.json"
+      "firstTokenAtMs": 1978,
+      "doneFrameAtMs": 3100,
+      "rawFile": "docs/evidence/navigate-sse/resume-chat-retrieval-revA.raw.txt",
+      "chunksFile": "docs/evidence/navigate-sse/resume-chat-retrieval-revA.chunks.json"
     }
   ],
   "negativeAssertions": [
@@ -94,7 +108,7 @@
       "navigate_token=<TOKEN>; Path=/; Max-Age=1800; HttpOnly; SameSite=Lax"
     ],
     "token": {
-      "prefix8": "4a4d1bc2",
+      "prefix8": "25d0f88e",
       "length": 12
     }
   }

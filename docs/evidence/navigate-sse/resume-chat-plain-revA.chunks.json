@@ -1,0 +1,659 @@
+{
+  "scenario": "plain",
+  "totalMs": 2153,
+  "status": 200,
+  "headers": {
+    "x-powered-by": "Express",
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "connection": "keep-alive",
+    "x-accel-buffering": "no",
+    "date": "Wed, 07 Oct 2026 07:02:11 GMT",
+    "transfer-encoding": "chunked"
+  },
+  "chunkCount": 107,
+  "chunks": [
+    {
+      "i": 0,
+      "atMs": 1648,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"谭\\\"\\n\\n\""
+    },
+    {
+      "i": 1,
+      "atMs": 1657,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"泳\\\"\\n\\n\""
+    },
+    {
+      "i": 2,
+      "atMs": 1657,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"超\\\"\\n\\n\""
+    },
+    {
+      "i": 3,
+      "atMs": 1669,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"：\\\"\\n\\n\""
+    },
+    {
+      "i": 4,
+      "atMs": 1683,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\"12\\\"\\n\\n\""
+    },
+    {
+      "i": 5,
+      "atMs": 1683,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 6,
+      "atMs": 1683,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"年\\\"\\n\\n\""
+    },
+    {
+      "i": 7,
+      "atMs": 1697,
+      "len": 35,
+      "escaped": "\"event: token\\ndata: \\\"软件开发\\\"\\n\\n\""
+    },
+    {
+      "i": 8,
+      "atMs": 1697,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"经验\\\"\\n\\n\""
+    },
+    {
+      "i": 9,
+      "atMs": 1697,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"（\\\"\\n\\n\""
+    },
+    {
+      "i": 10,
+      "atMs": 1697,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"前端\\\"\\n\\n\""
+    },
+    {
+      "i": 11,
+      "atMs": 1709,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"连续\\\"\\n\\n\""
+    },
+    {
+      "i": 12,
+      "atMs": 1709,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 13,
+      "atMs": 1709,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\"10\\\"\\n\\n\""
+    },
+    {
+      "i": 14,
+      "atMs": 1709,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 15,
+      "atMs": 1709,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"年\\\"\\n\\n\""
+    },
+    {
+      "i": 16,
+      "atMs": 1709,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"，\\\"\\n\\n\""
+    },
+    {
+      "i": 17,
+      "atMs": 1725,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"Web\\\"\\n\\n\""
+    },
+    {
+      "i": 18,
+      "atMs": 1725,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 19,
+      "atMs": 1725,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"前端\\\"\\n\\n\""
+    },
+    {
+      "i": 20,
+      "atMs": 1741,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"架构\\\"\\n\\n\""
+    },
+    {
+      "i": 21,
+      "atMs": 1741,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"师\\\"\\n\\n\""
+    },
+    {
+      "i": 22,
+      "atMs": 1741,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"出身\\\"\\n\\n\""
+    },
+    {
+      "i": 23,
+      "atMs": 1741,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"，\\\"\\n\\n\""
+    },
+    {
+      "i": 24,
+      "atMs": 1741,
+      "len": 27,
+      "escaped": "\"event: token\\ndata: \\\"Type\\\"\\n\\n\""
+    },
+    {
+      "i": 25,
+      "atMs": 1762,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"Script\\\"\\n\\n\""
+    },
+    {
+      "i": 26,
+      "atMs": 1762,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 27,
+      "atMs": 1762,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"全\\\"\\n\\n\""
+    },
+    {
+      "i": 28,
+      "atMs": 1762,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"栈\\\"\\n\\n\""
+    },
+    {
+      "i": 29,
+      "atMs": 1762,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 30,
+      "atMs": 1769,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\"6\\\"\\n\\n\""
+    },
+    {
+      "i": 31,
+      "atMs": 1769,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 32,
+      "atMs": 1769,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"年\\\"\\n\\n\""
+    },
+    {
+      "i": 33,
+      "atMs": 1769,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"），\\\"\\n\\n\""
+    },
+    {
+      "i": 34,
+      "atMs": 1769,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"近\\\"\\n\\n\""
+    },
+    {
+      "i": 35,
+      "atMs": 1769,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 36,
+      "atMs": 1781,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\"3\\\"\\n\\n\""
+    },
+    {
+      "i": 37,
+      "atMs": 1781,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 38,
+      "atMs": 1781,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"年\\\"\\n\\n\""
+    },
+    {
+      "i": 39,
+      "atMs": 1781,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"做\\\"\\n\\n\""
+    },
+    {
+      "i": 40,
+      "atMs": 1799,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"鸿\\\"\\n\\n\""
+    },
+    {
+      "i": 41,
+      "atMs": 1799,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"蒙\\\"\\n\\n\""
+    },
+    {
+      "i": 42,
+      "atMs": 1799,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"端\\\"\\n\\n\""
+    },
+    {
+      "i": 43,
+      "atMs": 1811,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"侧\\\"\\n\\n\""
+    },
+    {
+      "i": 44,
+      "atMs": 1811,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"开发\\\"\\n\\n\""
+    },
+    {
+      "i": 45,
+      "atMs": 1811,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"，\\\"\\n\\n\""
+    },
+    {
+      "i": 46,
+      "atMs": 1811,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"近\\\"\\n\\n\""
+    },
+    {
+      "i": 47,
+      "atMs": 1811,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 48,
+      "atMs": 1833,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\"1\\\"\\n\\n\""
+    },
+    {
+      "i": 49,
+      "atMs": 1833,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 50,
+      "atMs": 1833,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"年\\\"\\n\\n\""
+    },
+    {
+      "i": 51,
+      "atMs": 1833,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"主\\\"\\n\\n\""
+    },
+    {
+      "i": 52,
+      "atMs": 1840,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"攻\\\"\\n\\n\""
+    },
+    {
+      "i": 53,
+      "atMs": 1840,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\" AI\\\"\\n\\n\""
+    },
+    {
+      "i": 54,
+      "atMs": 1840,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\" Agent\\\"\\n\\n\""
+    },
+    {
+      "i": 55,
+      "atMs": 1840,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"，\\\"\\n\\n\""
+    },
+    {
+      "i": 56,
+      "atMs": 1944,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"能\\\"\\n\\n\""
+    },
+    {
+      "i": 57,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"独立\\\"\\n\\n\""
+    },
+    {
+      "i": 58,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"打通\\\"\\n\\n\""
+    },
+    {
+      "i": 59,
+      "atMs": 1944,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"「\\\"\\n\\n\""
+    },
+    {
+      "i": 60,
+      "atMs": 1944,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\"AI\\\"\\n\\n\""
+    },
+    {
+      "i": 61,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\" Agent\\\"\\n\\n\""
+    },
+    {
+      "i": 62,
+      "atMs": 1944,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 63,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"后端\\\"\\n\\n\""
+    },
+    {
+      "i": 64,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"编排\\\"\\n\\n\""
+    },
+    {
+      "i": 65,
+      "atMs": 1944,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\" +\\\"\\n\\n\""
+    },
+    {
+      "i": 66,
+      "atMs": 1944,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 67,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"前端\\\"\\n\\n\""
+    },
+    {
+      "i": 68,
+      "atMs": 1944,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\" /\\\"\\n\\n\""
+    },
+    {
+      "i": 69,
+      "atMs": 1944,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 70,
+      "atMs": 1944,
+      "len": 32,
+      "escaped": "\"event: token\\ndata: \\\"客户端\\\"\\n\\n\""
+    },
+    {
+      "i": 71,
+      "atMs": 1944,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"交付\\\"\\n\\n\""
+    },
+    {
+      "i": 72,
+      "atMs": 1945,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"」\\\"\\n\\n\""
+    },
+    {
+      "i": 73,
+      "atMs": 1945,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"全\\\"\\n\\n\""
+    },
+    {
+      "i": 74,
+      "atMs": 1945,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"链路\\\"\\n\\n\""
+    },
+    {
+      "i": 75,
+      "atMs": 1945,
+      "len": 30,
+      "escaped": "\"event: token\\ndata: \\\"。\\\\n\\\\n\\\"\\n\\n\""
+    },
+    {
+      "i": 76,
+      "atMs": 1945,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"想\\\"\\n\\n\""
+    },
+    {
+      "i": 77,
+      "atMs": 1950,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"了解\\\"\\n\\n\""
+    },
+    {
+      "i": 78,
+      "atMs": 1967,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"哪\\\"\\n\\n\""
+    },
+    {
+      "i": 79,
+      "atMs": 1967,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"部分\\\"\\n\\n\""
+    },
+    {
+      "i": 80,
+      "atMs": 1979,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"？\\\"\\n\\n\""
+    },
+    {
+      "i": 81,
+      "atMs": 1979,
+      "len": 32,
+      "escaped": "\"event: token\\ndata: \\\"我可以\\\"\\n\\n\""
+    },
+    {
+      "i": 82,
+      "atMs": 1979,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"展开\\\"\\n\\n\""
+    },
+    {
+      "i": 83,
+      "atMs": 1993,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"讲\\\"\\n\\n\""
+    },
+    {
+      "i": 84,
+      "atMs": 1993,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"工作\\\"\\n\\n\""
+    },
+    {
+      "i": 85,
+      "atMs": 2007,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"经历\\\"\\n\\n\""
+    },
+    {
+      "i": 86,
+      "atMs": 2007,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"、\\\"\\n\\n\""
+    },
+    {
+      "i": 87,
+      "atMs": 2007,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"自\\\"\\n\\n\""
+    },
+    {
+      "i": 88,
+      "atMs": 2058,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"研\\\"\\n\\n\""
+    },
+    {
+      "i": 89,
+      "atMs": 2058,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\" Agent\\\"\\n\\n\""
+    },
+    {
+      "i": 90,
+      "atMs": 2058,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 91,
+      "atMs": 2058,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"项目\\\"\\n\\n\""
+    },
+    {
+      "i": 92,
+      "atMs": 2064,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"、\\\"\\n\\n\""
+    },
+    {
+      "i": 93,
+      "atMs": 2064,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\"R\\\"\\n\\n\""
+    },
+    {
+      "i": 94,
+      "atMs": 2065,
+      "len": 25,
+      "escaped": "\"event: token\\ndata: \\\"AG\\\"\\n\\n\""
+    },
+    {
+      "i": 95,
+      "atMs": 2065,
+      "len": 24,
+      "escaped": "\"event: token\\ndata: \\\" \\\"\\n\\n\""
+    },
+    {
+      "i": 96,
+      "atMs": 2065,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"与\\\"\\n\\n\""
+    },
+    {
+      "i": 97,
+      "atMs": 2076,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"评测\\\"\\n\\n\""
+    },
+    {
+      "i": 98,
+      "atMs": 2076,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"实践\\\"\\n\\n\""
+    },
+    {
+      "i": 99,
+      "atMs": 2091,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"，\\\"\\n\\n\""
+    },
+    {
+      "i": 100,
+      "atMs": 2091,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"或\\\"\\n\\n\""
+    },
+    {
+      "i": 101,
+      "atMs": 2091,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"技能\\\"\\n\\n\""
+    },
+    {
+      "i": 102,
+      "atMs": 2105,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"栈\\\"\\n\\n\""
+    },
+    {
+      "i": 103,
+      "atMs": 2119,
+      "len": 29,
+      "escaped": "\"event: token\\ndata: \\\"细节\\\"\\n\\n\""
+    },
+    {
+      "i": 104,
+      "atMs": 2140,
+      "len": 26,
+      "escaped": "\"event: token\\ndata: \\\"。\\\"\\n\\n\""
+    },
+    {
+      "i": 105,
+      "atMs": 2153,
+      "len": 134,
+      "escaped": "\"event: sources\\ndata: [\\\"简历 / summary / 求职意向与定位\\\",\\\"简历 / summary / 核心亮点\\\",\\\"简历 / skills / 专业技能\\\"]\\n\\n\""
+    },
+    {
+      "i": 106,
+      "atMs": 2153,
+      "len": 28,
+      "escaped": "\"event: done\\ndata: __DONE__\\n\\n\""
+    }
+  ]
+}
