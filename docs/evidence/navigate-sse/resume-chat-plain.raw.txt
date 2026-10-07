@@ -1,9 +1,0 @@
-event: token
-data: "谭泳超，12 年软件开发经验（前端连续 10 年、Web 前端架构师出身，TypeScript 全栈 6 年），近 3 年做鸿蒙端侧开发、近 1 年主攻 AI Agent，能独立打通「Agent 后端编排 + 前端/客户端交付」全链路，求职方向是 AI 应用开发 / Agent 开发工程师。\n\n想深入了解哪部分？比如 WeLink 通讯录多端重构、自研 Navigate Agent 系统，或 RAG 检索与评测闭环，我可以展开讲。"
-
-event: sources
-data: ["简历 / summary / 求职意向与定位","简历 / summary / 核心亮点","简历 / skills / 专业技能","简历 / summary / 求职意向与定位","简历 / projects / 项目二：doc-fine-tuning-mcp —— 办公文档精修 MCP Server（可视化标注 + 版本化编辑）","简历 / experience / 佛山市蠢材科技有限公司 ｜ Web 前端架构师 ｜ 2015.12 – 2023.08","简历 / experience / 科之锐（派驻华为） ｜ 鸿蒙开发工程师（协作办公客户端 · AI Agent 能力接入） ｜ 2023.11 – 2026.08 ｜ 绩效：部门年度 A（连续 3 个半年度 A）","简历 / experience / 佛山高臣药业股份有限公司 ｜ 前端开发工程师 ｜ 2013.10 – 2015.10","简历 / summary / 核心亮点","简历 / projects / 项目一：Navigate —— 自研多模式 Agent 系统（TypeScript + LangGraph + MCP）","简历 / education / 教育背景"]
-
-event: done
-data: __DONE__
-

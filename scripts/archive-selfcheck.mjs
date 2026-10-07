@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * 把自检产物归档到 docs/evidence/ —— 让"跑起来了"这件事在仓库里有据可查。
+ * 把自检产物归档到 docs/evidence/ —— 让"跑起来了"这件事在本地有据可查。
  *
  * 为什么不让自检直接写到 docs/：
  *   自检产物是**生成的**，生成物应该待在 dist/（已 gitignore）。
- *   只有"需要有据可查"的那一份才进版本库，且要能一眼看出是哪次跑出来的
- *   （报告里带 ranAt / mode / 版本矩阵）。
+ *   归档的这一份带 ranAt / mode / 版本矩阵，能一眼看出是哪次跑出来的。
  *
- * 为什么不提交 dist/ 里的产物：
- *   每次跑都会变（时间戳、哈希文件名），提交进去只会得到一堆无意义的 diff。
+ * ⚠️ 2026-10-07 起 docs/ **整目录不进版本库**（用户裁决，见 .gitignore）。
+ *   所以本脚本产出的证据**只落在本地磁盘**，不再随 commit 走 —— 它服务于
+ *   "跑完当场要能查证"，而不是"事后在仓库里翻证据"。
+ *   需要跨机器/跨人复现时，把 docs/evidence/ 下的文件随需要单独传递。
  */
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
