@@ -7,6 +7,7 @@
  */
 
 import type { AgentDeps, Cancel } from './deps.js';
+import { errorMessage } from '../errorMessage.js';
 
 export interface ModelRequest {
   readonly sessionId: string;
@@ -122,8 +123,9 @@ export class ScriptedModel implements ModelPort {
         }
       })
     } catch (err) {
-      // 就地取消息，不引入外部工具类（core 里多一个文件就多一份依赖面）。
-      sink.onError(err instanceof Error ? err.message : String(err))
+      // 取消息统一走 core 的 errorMessage —— 这段判断在仓库里有十几处，
+      // 就地手写等于把它复制 N 份（改一次要改 N 处、必漏几处）。
+      sink.onError(errorMessage(err))
     }
 
     // 取消函数**只负责"停住上游"，不碰 sink**。

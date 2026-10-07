@@ -22,6 +22,7 @@
  */
 
 export * from './ports.js';
+export * from './errorMessage.js';
 export * from './session/store.js';
 export * from './fs/posixPath.js';
 export * from './fs/workspaceStore.js';

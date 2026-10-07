@@ -1,5 +1,6 @@
 import type { AgentStreamEvent, Usage } from '@crossdeck/contract';
 import { StreamBus } from '../events/streamBus.js';
+import { errorMessage } from '../errorMessage.js';
 import { BACKPRESSURE_DEFAULTS, BackpressurePump } from './backpressure.js';
 import type { BackpressureConfig, DrainingSummary } from './backpressure.js';
 import type { AgentDeps } from './deps.js';
@@ -190,7 +191,7 @@ export class AgentRuntime {
           type: 'error',
           runId: run.runId,
           code: 'UPSTREAM',
-          message: err instanceof Error ? err.message : String(err),
+          message: errorMessage(err),
         });
       }
       return;

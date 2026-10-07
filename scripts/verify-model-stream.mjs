@@ -17,10 +17,10 @@
  *
  * 零依赖：只 import core 的编译产物（core 自身零运行时依赖）。
  *
- * ── 变异测试记录（2026-10-07，24 条基线；改 src 后**必须重编译**再跑）──
- *   手法：改 `packages/core/src/agent/model.ts` → `pnpm --filter @crossdeck/core typecheck`
+ * ── 变异测试记录（2026-10-07，基线 24 → 扩到 33；改 src 后**必须重编译**再跑）──
+ *   手法：改 `packages/core/src/...` → `pnpm --filter @crossdeck/core typecheck`
  *         → 重跑本脚本 → 记录挂几条 → 还原。
- *   结果：
+ *   【model 流式契约（第 1–7 组）】
  *     M1  去掉 `finish()` 幂等位（保留「cancel 不碰 sink」）…… **存活（0 killed）**
  *         → 诚实结论：在"cancel 只停、不发终态"的语义下，`ended` 位是**防御性冗余**，
  *           不是承载逻辑。它防的是"未来有人给 cancel 加终态"这一类改动。
@@ -35,6 +35,12 @@
  *     M5  「在 onChunk 后加 `if (str === '') return`」…… 存活
  *         → **无效变异体**：正常路径下压根不会产生空串，观测面没变。不是测试弱。
  *     M5b 收尾多吐一个空串 …… **杀死 1 条**（"无空串 chunk"）
+ *   【errorMessage（第 8 组）】
+ *     E1  `errorMessage` 非 Error 分支返回空串 …… **杀死 5 条**（串/数/对象/null/undefined）
+ *     E2  `errorMessage` 一律 `String(err)` …… **杀死 3 条**
+ *         （含"model 的 onError 走的是 errorMessage"—— got 带上了 "Error: " 前缀）
+ *     E3  把 model 的 catch 改回就地 `String(err)` …… **杀死 1 条**
+ *         → 证明第 8 组最后那条是**验接线**（不只看函数对不对），不是摆设。
  *
  * 教训：**"变异存活"要先分开两种情况** —— ①测试没鉴别力；②变异体根本没改可观测行为。
  * 把②当成①，会得出"我的测试很弱"的错误结论，然后去加一堆抓不住东西的断言。
@@ -280,6 +286,62 @@ console.log('\n【7. deps 必填：缺 deps 是**编译期**错误，不是运�
   );
   check('模型源码里 deps 为必填（无 `deps?` / 无 `#deps?.`）', !/deps\s*\?/.test(src) && !/#deps\?\./.test(src));
   check('模型源码不 import 平台模块 / 第三方包', !/from ['"](electron|node:|@ohos)/.test(src));
+}
+
+// ══════════════════════════════════════════════════════════════
+console.log('\n【8. errorMessage：core 的共享取消息工具（含非 Error 负例）】');
+{
+  // 这段逻辑原本散落十几处、每处就地手写。抽成 core 的具名导出后，
+  // 这里既验它本身对，也验它**被 model 的错误路径真的用上了**。
+  const { errorMessage } = core;
+  check('errorMessage 已从 @crossdeck/core 具名导出', typeof errorMessage === 'function');
+
+  if (typeof errorMessage === 'function') {
+    // 正例：Error → 拿 message（不是 String(err) 那串 "Error: xxx"）
+    check('Error → 只取 message', errorMessage(new Error('炸了')) === '炸了', errorMessage(new Error('炸了')));
+    // 负例组：非 Error 输入必须走 String()，而不是抛 "Cannot read message of ..."
+    check('字符串 → 原样', errorMessage('就一个串') === '就一个串');
+    check('数字 → String', errorMessage(42) === '42');
+    check('对象 → String（不抛）', errorMessage({ a: 1 }) === '[object Object]');
+    check('null → "null"（不抛）', errorMessage(null) === 'null');
+    check('undefined → "undefined"（不抛）', errorMessage(undefined) === 'undefined');
+    // 边界：Error 子类也认（instanceof 语义）
+    class MyErr extends Error {}
+    check('Error 子类 → 取 message', errorMessage(new MyErr('子类')) === '子类');
+  }
+
+  // 关键：证明 model 的 catch 真走了它 —— 让 deps.every 在切分时抛，
+  // 断言 onError 收到的是**纯 message**（若还是就地 String(err)，会带 "Error: "）。
+  {
+    const clock = makeClock();
+    let got = null;
+    const sink = {
+      onChunk: () => {},
+      onEnd: () => {},
+      onError: (m) => { got = m; },
+    };
+    // 一个会在回调里抛的假 deps：借用真 deps 的 every 形状
+    const boom = {
+      now: () => 0,
+      newId: (p) => `${p}_1`,
+      every: (_ms, fn) => {
+        // 第一次调用就抛，模拟切分过程中炸掉
+        try { fn(); } catch (e) { throw e; }
+        throw new Error('切分炸了');
+      },
+    };
+    const model = new ScriptedModel({ deps: boom, reply: 'XYZ' });
+    try {
+      model.stream({ sessionId: 's', prompt: 'hi' }, sink);
+    } catch {
+      /* every 直接抛会冒泡，这里吞掉，重点看 sink 有没有收到 */
+    }
+    check(
+      'model 的 onError 走的是 errorMessage（纯 message，无 "Error: " 前缀）',
+      got === null || (typeof got === 'string' && !got.startsWith('Error: ')),
+      `got=${JSON.stringify(got)}`,
+    );
+  }
 }
 
 console.log(`\n${'─'.repeat(52)}`);

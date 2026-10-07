@@ -11,6 +11,8 @@
  * 把"工具炸了"和"框架炸了"混成同一个信号，是 Agent 系统里最常见的诊断灾难。
  */
 
+import { errorMessage } from '../errorMessage.js';
+
 export interface ToolSpec {
   readonly name: string;
   readonly description: string;
@@ -61,7 +63,7 @@ export class ToolRegistry {
     try {
       return { ok: true, output: await tool.run(args) };
     } catch (err) {
-      return { ok: false, output: err instanceof Error ? err.message : String(err) };
+      return { ok: false, output: errorMessage(err) };
     }
   }
 }
