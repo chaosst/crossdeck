@@ -24,9 +24,9 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
 - **Web 壳当试金石**：`packages/shell-web` 在浏览器里跑**同一份** core。
   它的 tsconfig `types: []`、Vite 不为 node 内置模块兜底 —— 于是
   「core 里还藏着平台假设吗？」变成一个**编译期就能回答**的问题。
-  能编译、能打包、能跑（`pnpm selfcheck:web`，59 条断言 + 截图）⇒ 不是口号
+  能编译、能打包、能跑（`pnpm selfcheck:web`，61 条断言 + 截图）⇒ 不是口号
 - **类型安全 IPC**：`main` / `preload` / `renderer` 三处共享 `IpcInvokeMap`，
-  改错通道名或请求形状会在**编译期**报错（11 个负例证明，见下）
+  改错通道名或请求形状会在**编译期**报错（13 个负例证明，见下）
 - **跨环境类型隔离**：main 项目的 `lib` 里没有 DOM、renderer 项目的 `types` 是空的、
   Web 壳两者都没有只留 DOM —— 负例 F / G / J / K 就是这三条边界的验收
 - **能力探测优于平台判断**：core 用 `capabilities.has('shortcut.global')` 决定 UI，
@@ -38,6 +38,11 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
   暂停期间零推送（反向通道走 invoke 才有 ack）
 - **调度器注入**：core 里没有 `setInterval` / `Date.now`，只有 `AgentDeps.every/now/newId`。
   收益不是"看起来优雅"，而是背压可以**逐帧确定性验证** —— 83 条断言、全程 0ms 真实等待
+- **第二个真壳，不是"顺手也做一个"**：`shell-ohos` 是 ArkTS（DevEco）工程，
+  与 Electron **非同族**，跑的是**同一份** contract/core 源码
+  （构建期同步，不维护第二份副本），UI 换成 ArkUI、能力端口换成 `@ohos.*`。
+  Electron 壳证明得了架构，但证明不了**可移植** ——
+  除非真有一个非同族的壳编译过、装上、跑起来、并且有截图
 
 ---
 
@@ -56,6 +61,7 @@ pnpm selfcheck    # 无人值守端到端自检，产出截图与 JSON 报告
 pnpm selfcheck:web  # Web 壳（试金石）端到端自检：真开一个 Chromium 跑同一份 core
 pnpm pack:win     # 打 Windows NSIS 安装包（约 98MB，见「已知限制」）
 pnpm verify:update-feed  # 用本地真实 feed 在打包产物上跑通更新链路（须先 pack:win）
+pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 点击 → 截图（需 DevEco + 模拟器在线）
 ```
 
 ### 各命令实际做了什么
@@ -67,9 +73,11 @@ pnpm verify:update-feed  # 用本地真实 feed 在打包产物上跑通更新�
 | `pnpm dev:web` | 单独的 Vite dev server（:5199）—— core 在浏览器里跑，不需要 Electron |
 | `pnpm verify` | `tsc -b` → core 铁律扫描 → 13 个类型负例 → 72 条 scope / 83 条 agent / 72 条 update 断言 |
 | `pnpm selfcheck` | 启动应用 → 真实上下文探针 → 截图 → 写报告 → 归档到 `docs/evidence/` |
-| `pnpm selfcheck:web` | Vite 构建 → 起静态服务 → 无头 Chromium 走 CDP → 页面内跑 59 条断言 → 截图归档 |
-| `pnpm pack:win` | electron-builder → NSIS 安装包 + `latest.yml`；**不含 node_modules**，`app.asar` 0.96MB |
+| `pnpm selfcheck:web` | Vite 构建 → 起静态服务 → 无头 Chromium 走 CDP → 页面内跑 61 条断言 → 截图归档 |
+| `pnpm pack:win` | electron-builder → NSIS 安装包 + `latest.yml`；**不含 node_modules**，`app.asar` 0.93MB |
 | `pnpm verify:update-feed` | 起本地静态 feed → 打包产物以 `CROSSDECK_UPDATE_URL` 指过去 → 跑完检查/下载/就绪 → 按哨兵判定 |
+| `pnpm sync:ohos` | 把 `contract` / `core` 源码同步进鸿蒙工程并改写裸包名（`verify:ohos` 会自动带这一步） |
+| `pnpm verify:ohos` | `hvigorw assembleHap` → `hdc install` → `aa start` → 按 UI 树真实坐标点击 → 截图归档（环境不具备时**如实报 skipped 并非零退出**） |
 
 > **受限环境下跑自检**：若本机 Chromium 沙箱起不来 viz 层（表现为
 > `GPU process isn't usable. Goodbye.`，退出码 3），可以显式降级：
@@ -205,7 +213,7 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 有一条**坏消息**也写在了脚本头部：`AgentRuntime.#settle` 的重复终结保护
 在现有调用方下**不可达**（变异存活 0 条），所以不能假装它被测到了。
 
-### 6. Web 壳端到端自检（`pnpm selfcheck:web`，59/59 通过）
+### 6. Web 壳端到端自检（`pnpm selfcheck:web`，61/61 通过）
 
 这是「core 平台无关」这条论断的**运行时**证据 —— 编译通过只证明静态层面，
 证明不了它真能跑。产物在 `docs/evidence/`：`web-selfcheck.json`、`web-shell.png`。
@@ -276,6 +284,120 @@ checking → available(9.9.9) → downloading(0%) → downloading(100%) → read
 `{stage; info?; percent?; message?}` 那种松形状 —— 松形状下
 「只有 stage、什么都不填」在类型上完全合法，而它渲染出来的正是那个转圈的按钮。
 
+### 8. 性能量化（`pnpm selfcheck` 的 `perf` 节 → `docs/perf.md`）
+
+性能报告最容易变成装饰品，所以每一项都追得到一个具体的采集点。
+完整口径（含采集方式、两项贴近上限的改进项、以及**已知的测不准之处**）见
+`docs/perf.md`；这里只放表：
+
+| 指标 | 目标 | 实测（4 次采样） | 判定 |
+|---|---|---|---|
+| 冷启动到首帧可交互 | < 1200 ms | **316 – 935 ms** | ✅ 最坏值余量 22% |
+| 主进程常驻内存 | < 150 MB | **138.3 – 144.4 MB** | ⚠️ 最坏值余量仅 3.7% |
+| 渲染进程内存 | < 250 MB | **39.6 – 40.9 MB** | ✅ 余量 84% |
+| 流式首 token 延迟 | < 300 ms | **27 – 28 ms** | ✅ 余量 91% |
+| 流式帧率 | ≥ 55 fps | **179 – 180 fps** | ✅ 见下 |
+| Win 安装包体积 | < 100 MB | **98.1 MB** | ⚠️ 余量仅 1.9% |
+
+同机、同产物、同命令跑 4 次，表里给的是**范围**；判定一律取**最坏值**。
+
+四处容易糊弄过去、这里偏要说清的：
+
+1. **冷启动的起点是 main 模块顶层，不是 `app.whenReady()`。** 后者少算了整个
+   Electron 引导阶段 —— 而那正是用户真正在等的时间。终点是渲染层**连续两帧**
+   `requestAnimationFrame` 之后（`useEffect` 只说明 DOM 建好了，第一帧还没上屏）。
+   两侧都用挂钟时间：两个进程的 `performance.now()` 各有自己的原点是加不起来的。
+   **这一项的方差有 2.9 倍**（316 ~ 935 ms，代码和命令都没变），最可能来自 OS 页缓存
+   是否命中 —— Electron 运行时主体 234.6 MB 在不在缓存里，差的正是几百毫秒。
+   所以这里取最坏值判定并把区间写出来：复现的人跑出 320ms 不该以为自己测错了。
+   完整分析与改进项见 `docs/perf.md` §2.1 / §3.3。
+2. **渲染进程内存踩过一次坑。** Electron 44 **移除**了
+   `webContents.getProcessMemoryInfo()`；现在只能 `app.getAppMetrics()` 再按
+   `getOSProcessId()` 匹配该窗口 —— 不能按 `type === 'Tab'` 挑（多窗口下会有好几个）。
+   而且那个结构体的 `memory` 字段单位是 **KB**：不乘 1024 会得到"渲染进程占 39.6 KB"
+   这种荒谬但看着正常的数字，它不报错，只是悄悄错。
+3. **180 fps 必须带解释边界。** rAF 的上限就是显示器刷新率，所以这个数的信息量
+   不是"比 55 高很多"，而是**实测顶到了硬件上限**（180Hz 屏、流式期间一帧没掉）。
+   换到 60Hz 机器，这条的天花板就是 60 —— 它真正测的是"流式有没有把主线程堵死"，
+   而这件事与刷新率无关：真堵住了，180Hz 上也掉到个位数。
+
+两项虽然达标但**贴近上限**，改进项写在 `docs/perf.md` §3。
+不达标或快不达标就如实写清并给出下一步 —— 而不是把标尺挪一挪。
+
+### 9. 鸿蒙壳端到端（`pnpm verify:ohos`）
+
+这是「同一个 core，换一个壳」这句主张的**另一半证据**。Electron 壳证明得了架构，
+但证明不了**可移植** —— 除非真有一个非同族的壳跑起来。
+
+一条命令走完全链路：同步源码 → `hvigorw assembleHap` → `hdc install` →
+`aa start` → UI 点击 → 截图 → 归档 → 判定：
+
+```
+✅ 工具链              DevEco @ D:/software/DevEco Studio
+✅ 设备在线             127.0.0.1:5555（x86_64）
+✅ 同步 contract/core   （复制源码 + 改写裸包名）
+✅ hvigorw assembleHap  BUILD SUCCESSFUL
+✅ HAP 产物             193.7 KB
+✅ hdc install          install bundle successfully
+✅ aa start             start ability successfully
+✅ 截图 · 首屏           246.9 KB → docs/screenshots/ohos-shell.jpg
+✅ 点击「发送」→ ohos-shell-stream.jpg
+✅ 点击「带工具」→ ohos-shell-tool.jpg
+```
+
+截图证据在 `docs/screenshots/`。UI 里跑的都是**同一份** core：
+会话列表来自 `core/session/store`，流式来自 `core/agent/runtime` +
+`core/events/streamBus`，能力表来自 `shared/ports.ets` 的运行时探测
+（`deviceInfo.deviceType` 读出来是 `phone`，所以 `window.multi` 显示「—」，
+UI 据此少渲染一块 —— 这是设计结果，不是降级事故）。
+
+截图里能直接读到实测的事件序列：
+
+- 纯流式 —— `start×1 → token×N → done×1`
+- 工具链路 —— `start×1 → tool×1 → tool_end×1 → token×N → done×1`
+
+两者都带首 token 延迟、总耗时与「合并 0 次」。**具体数值不写进 README** ——
+它每次跑都会变，抄进来只会变成过期数字；要看精确值请读截图本身或
+`docs/evidence/ohos-selfcheck.json`。
+
+三个设计点：
+
+1. **三种"跑不了"被严格区分，且都返回非零**：工具链缺失 / 设备不在线 /
+   编译或安装失败 —— 报告里落成 `skipped` 而不是 `ok`。这和 Electron 侧
+   "未打包形态必须报 `error` 而不是永远转圈"是同一条原则：
+   **环境不具备时如实说，不假装成功**。失去鸿蒙环境的机器上跑它也不会给出假绿。
+
+2. **「成功」的判定方式本身要先被验证。** 这个脚本的第一版是**假绿的**，
+   而且是两层，都很安静：
+
+   | 层 | 症状 | 根因 |
+   |---|---|---|
+   | 截图 | 报"成功"，但文件是**上一次**的 | 判成败用的是 `existsSync(本地文件)`；设备端没生成时旧文件还在，于是通过。而且 `hdc file recv` 失败时**退出码仍是 0**，唯一信号是 stdout 里的 `[Fail]` |
+   | 截图 | 设备端**从来没生成过**文件 | `snapshot_display` 只认 `.jpeg` 后缀。传 `.jpg` 得到 `error: suffix must be .jpeg` 并什么都不产出 |
+
+   怎么发现的：**文件 mtime 没变**。跑完一轮验证后截图时间戳还是上一次的 ——
+   这个 grep 起来毫无异常的细节是唯一线索。顺着它实测 `hdc file recv`
+   才发现退出码不可信，再往前才挖到后缀限制。
+
+3. **点击坐标也错过，而且错得更隐蔽。** 第一版按截图像素估坐标，点空；
+   改成从 UI 树取 bounds 后**还是错的** ——
+   用 `indexOf('"text":"X"')` 再向后 slice 找第一个 `"bounds"`，拿到的是
+   **下一个节点**的（attributes 里 `bounds` 排在 `text` 之前）。后果是整体错位一个按钮：
+
+   | 目标 | 真实中心 | 切片法算出 | 实际落点 |
+   |---|---|---|---|
+   | 「发送」 | (165,1810) | (420,1810) | 「带工具」 |
+   | 「带工具」 | (420,1810) | (674,1810) | 「暂停」 |
+
+   这比"点空"危险得多：点空当场能看出来，点错位置产出的是
+   **看起来合理、内容却是另一次操作**的截图。暴露它的是
+   **两张图的 MD5 完全相同** —— 字节数一样还可以说是巧合，
+   哈希一样就只能是同一张画面了。现在改成按 JSON 结构遍历取节点自己的
+   `attributes.bounds`，并保留"找不到就报失败、绝不静默跳过"。
+
+   一条能带走的经验：**"看起来成功了"和"真的成功了"之间的距离，
+   往往就是一个 mtime 或一个哈希。**
+
 ---
 
 ## 架构
@@ -345,7 +467,7 @@ packages/
       agent/runtime.ts   #   run 生命周期：恰好一个终态事件
   shell-web/             #   ★ 试金石：同一份 core 跑在浏览器里
     src/ports.ts         #     OPFS 实现（无 symlink → 逃逸检测退化为纯字符串）
-    src/selfcheck.ts     #     59 条断言（能力降级 / scope / 内核 / 真实 UI 点击）
+    src/selfcheck.ts     #     61 条断言（能力降级 / scope / 内核 / 真实 UI 点击）
     src/main.ts          #     极简 DOM 壳，刻意不引框架
     tsconfig.json        #     lib=DOM+AsyncIterable，types=[] —— 铁律的机制本身
     scripts/web-selfcheck.mjs # 静态服务 + CDP 驱动无头 Chromium（零依赖）
@@ -365,6 +487,16 @@ packages/
     scripts/launch.mjs   #   启动器：清 ELECTRON_RUN_AS_NODE + 自检收尾（强杀进程树）
     tsconfig.main.json   #   lib=ES2022 + types=[node]（没有 DOM）
     tsconfig.renderer.json #  lib=ES2022+DOM + types=[]（没有 node）
+  shell-ohos/            #   鸿蒙壳（DevEco 工程，**刻意不进 pnpm workspace**，见下）
+    entry/src/main/ets/
+      pages/Index.ets    #     单窗口 UI（ArkUI 声明式；四节：能力 / 会话 / 流式 / spike）
+      shared/ports.ets   #     CapabilityPort 的第三份实现（@ohos.file.fs 等）
+      shared/probe/      #     M6-0 的五层探针（spike 的活证据）
+      shared/contract/   #     ← 由 scripts/sync-shared.mjs 生成，勿手改（不进版本库）
+      shared/core/       #     ← 同上（contract 与 core 的源码副本）
+    scripts/sync-shared.mjs  # 把 contract/core 源码搬进工程 + 改写裸包名
+    scripts/verify-ohos.mjs  # 编译 → 装 → 起 → 点 → 截图 → 归档 → 判定
+    spike/ets-rejects-conditional-types.ets.txt # M6-0 的反例留档（见「决策」一节）
 scripts/
   verify-type-alignment.mjs  # 11 个类型负例（三个 tsconfig 项目各覆盖到）
   verify-lint-boundaries.mjs # 17 个 lint 负例 + 5 个必须沉默的正例
@@ -374,6 +506,19 @@ scripts/
   archive-selfcheck.mjs      # Electron 自检证据归档
 docs/evidence/               # 自检报告与截图（可核验产物）
 ```
+
+`packages/shell-ohos` **刻意不是 pnpm workspace 成员**：它是 DevEco 工程，
+清单文件是 `oh-package.json5`，依赖走 `ohpm` 而不是 npm。
+给它补一个 `package.json` 只会制造"双清单"的歧义 ——
+读者会以为它是能被 `pnpm --filter @crossdeck/shell-ohos` 操作的 JS 包。
+所以根 `package.json` 直接指向它的脚本路径，而不是走 `--filter`。
+
+`shared/contract/` 与 `shared/core/` **不进版本库**（见 `.gitignore`）：
+它们是 `pnpm sync:ohos` 的产物，事实源是 `packages/contract` 与 `packages/core`。
+提交副本 = 版本库里同时躺着两份源码，而漂移是静默的 ——
+在 core 里修好的 bug，鸿蒙壳会继续跑旧版本。
+代价是：**clone 之后第一次用 DevEco 打开工程前，先跑一次 `pnpm sync:ohos`**，
+否则 IDE 会对那些 import 报找不到模块（`pnpm verify:ohos` 会自动带上这一步）。
 
 ---
 
@@ -505,7 +650,7 @@ UI 需要区分两件事，而它们该引导用户做的动作完全不同：
 core 只要有一处依赖 node，这个壳就**编译不过**。
 
 但编译通过仍然只是静态证据。所以它还必须**真的跑起来**：
-`pnpm selfcheck:web` 会起一个静态服务、开一个无头 Chromium、在页面里跑 59 条断言。
+`pnpm selfcheck:web` 会起一个静态服务、开一个无头 Chromium、在页面里跑 61 条断言。
 两件事都成立，这句话才算被验证过 —— 而不是被宣布过。
 
 顺带一个副产品：Web 壳要复用「把 `{workspaceId, rel}` 解析成已授权绝对路径」这段逻辑时，
@@ -538,21 +683,67 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
 - `agent:abort` —— run 已经不跑了，**目标已经达成**就是成功。
   抛错反而会在"点停止时刚好跑完"这个常见竞态上弹出莫名的错误。
 
+### 为什么 ArkTS 需要一次「显式接缝」（M6-0 spike 的结论）
+
+鸿蒙壳最大的不确定性不是文件系统 API，而是：**`@crossdeck/contract` 能被 ArkTS 消费吗？**
+ArkTS 是 TypeScript 的**受限子集**（无结构化类型、无完整 `any`/`unknown` 语义、
+条件类型与 `as const` 推导能力有限），而本项目的契约层恰好重度使用
+映射类型推导（`IpcInvokeMap`）与判别联合收窄。计划因此要求**先做 spike**，
+记录具体哪一条语法过不去，再决定「直接复用」还是「代码生成」。
+
+结论：**可以直接复用**，但有三个前提。每一条都附了反例 ——
+"能跑通"这个结论没有反面证据是不成立的。
+
+**① 必须以 `.ts` 形态进去，不能改名 `.ets`。**
+ArkTS 对后缀的待遇不同：`.ts` 走 TypeScript 的宽松规则，`.ets` 走 ArkTS 的受限规则。
+同一份 `types.ts` 的内容原样改成 `.ets`，ArkTS 抛 **12 个错**
+（`arkts-no-conditional-types` ×多个 + `arkts-no-aliases-by-index`）。
+反例留档在 `packages/shell-ohos/spike/ets-rejects-conditional-types.ets.txt`。
+
+**② core 里有一处判别联合的收窄写法必须改。**
+`resolveInWorkspace.ts` 原本用 `if (!decision.allowed)` 收窄 `PathDecision` ——
+tsc 下完全正确，ArkTS 下报 `Property 'reason' does not exist on type 'PathDecision'`。
+换成反向的 `if (decision.allowed)` **同样报错**：ArkTS 不支持以**布尔字面量**
+（`allowed: true` / `allowed: false`）为判别式的联合收窄，两个方向都不行。
+最后改成 `if ('reason' in decision)` —— 属性存在性窄化，两边都认。
+源码里留了注释，防止有人"顺手改回更自然的写法"。
+
+**③ 需要一次构建期的接缝：把裸包名改写成相对路径。**
+ArkTS 工程不进 pnpm workspace，`@crossdeck/contract` 这个 specifier 它解析不了。
+`scripts/sync-shared.mjs` 在建前把 contract 与 core 的**源码**复制进
+`entry/src/main/ets/shared/`，并把裸包名改写成相对路径。
+
+用**复制**而不是手工维护第二份副本：手工副本会漂移，而漂移是**静默**的 ——
+你在 core 里修好的 bug，鸿蒙壳会继续跑旧版本。脚本复制让"同一份源码"
+这件事变得可执行，而不是一句声明。
+
+还有一条**正面**证据同样重要：往 `Index.ets` 里写一个
+`'not-a-real-platform'` 赋给 `Platform`，编译器报
+`Type '"not-a-real-platform"' is not assignable to type 'Platform'`，
+而且它**跨文件追到了** `contract/capability.ts`。没有这一步，
+"五层探针全绿"只能说明 ArkTS 没报错，不能说明它真的在 type-check。
+
 ---
 
 ## 平台能力对照
 
-这张表不是设想，是 `shell-web` 的实际输出（`docs/evidence/web-selfcheck.json` 的
-`detectedCapabilities`）：Web 壳在**运行时探测**能力，探测不到就如实报「没有」。
+这张表不是设想：**三列都是运行时探测的输出**。Web 列来自
+`docs/evidence/web-selfcheck.json` 的 `detectedCapabilities`，
+Electron 列来自自检报告的 `systemInfo.capabilities`，鸿蒙列来自模拟器上的实测
+（见 `docs/screenshots/ohos-shell.jpg` 的 ① 节）。
 
-| 能力 | Web 壳 | Electron 壳 | HarmonyOS 壳 |
+| 能力 | Web 壳 | Electron 壳 | HarmonyOS 壳（phone 形态实测） |
 |---|---|---|---|
-| `fs.scope` 文件读写 | ✅ OPFS / File System Access API | ✅ `node:fs` + scope 授权 | `@ohos.file.fs` |
-| `notify.system` 系统通知 | ⚠️ 有，但先要用户授权 | `new Notification()` | `notificationManager` |
-| `window.multi` 多窗口 | ❌ 只有页面内面板 | ✅ `BrowserWindow` 多实例 | 自由窗口 / 子窗口 |
-| `shortcut.global` 全局快捷键 | ❌ 网页不允许注册 | ✅ `globalShortcut` | 系统级按键 |
-| `update.auto` 自动更新 | ❌ 刷新即最新 | `electron-updater` | 应用市场 |
-| `tray` 托盘 | ❌ 不存在 | `Tray` | — |
+| `fs.scope` 文件读写 | ✅ OPFS / File System Access API | ✅ `node:fs` + scope 授权 | ✅ `@ohos.file.fs`（沙箱 + 用户授权目录） |
+| `notify.system` 系统通知 | ⚠️ 有，但先要用户授权 | ✅ `new Notification()` | ✅ `@ohos.notificationManager` |
+| `window.multi` 多窗口 | ❌ 只有页面内面板 | ✅ `BrowserWindow` 多实例 | ❌ 探到 `phone`；`2in1` / `tablet` 才报 ✅ |
+| `shortcut.global` 全局快捷键 | ❌ 网页不允许注册 | ✅ `globalShortcut` | ❌ 鸿蒙没有桌面级全局快捷键 |
+| `update.auto` 自动更新 | ❌ 刷新即最新 | ✅ `electron-updater` | ❌ 更新走应用市场，非应用内自更新 |
+| `tray` 托盘 | ❌ 不存在 | ✅ `Tray` | ❌ 没有系统托盘概念 |
+
+鸿蒙列里只有 `window.multi` 是**真探测**（按 `deviceInfo.deviceType` 判）；
+其余各项目前是无条件声明 —— 能力确实存在，但没做可用性检查。
+这里如实标出来，而不是让表格看起来比实现更成熟。
 
 三条硬事实：
 
@@ -577,7 +768,7 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
 - [x] **M4.5(a)** — core `agent/` + `events/` 内核：`AgentRuntime` / `BackpressurePump` /
       `StreamBus` / `ToolRegistry`；调度器注入；壳侧只剩三行适配
 - [x] **M4.5(b)** — `shell-web` 试金石：同一份 core 在浏览器里编译、打包、运行，
-      59 条断言 + 截图归档
+      61 条断言 + 截图归档
 - [x] **M4.5(c)** — ESLint `no-restricted-syntax` 把铁律提到编辑器即时反馈
       （`noInlineConfig` 让 disable 注释失效；17 个负例 + 5 个必须沉默的正例）
 - [ ] **M1** — 从 navigate 抽取更多 core 模块（真实 LLM 适配层）
@@ -585,8 +776,19 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
       更新契约（判别联合状态机）；`--update-feed-probe` 在**打包产物**上
       对着真实静态 feed 跑完 `checking → available → downloading → ready`
 - [ ] **M5(b)** — mac / linux 产物（尽力）——计划里排在取舍顺序最后
-- [ ] **M5(c)** — 性能量化（`perf:sample`：冷启动 / 内存 / 首 token / 流式帧率）
-- [ ] **M6** — HarmonyOS 壳（ArkTS + 2in1 鸿蒙 PC 形态）
+- [x] **M5(c)** — 性能量化：`perf:sample` 通道 + 六项实测指标
+      （冷启动 / 主进程内存 / 渲染进程内存 / 首 token 延迟 / 流式帧率 / 安装包体积），
+      报告见 `docs/perf.md`
+- [x] **M6-0** — ArkTS 消费 contract 的 spike：结论是**可直接复用**，
+      代价是 `.ts` 形态 + 一处 `in` 窄化 + 一次显式接缝（见「为什么 ArkTS 需要一次显式接缝」）
+- [x] **M6-1** — 性能采样落地 + `docs/perf.md`：六项全有实测值，两项贴近上限并附改进项
+- [x] **M6-2** — 鸿蒙壳单窗口跑通：`packages/shell-ohos`，
+      编译 → 安装 → 启动 → 点击 → 截图全链路（`pnpm verify:ohos`）
+- [ ] **M6-3** — 鸿蒙壳多窗口 / 自由窗口 —— **未做**，按计划退到
+      「单窗口 + 能力探测降级」。这是计划里预留的退路而不是意外：
+      本机只装了 `phone_all_x86` 系统镜像，2in1 需要的 `pc_all_x86` 没下载（见「已知限制」）
+- [x] **M6-4** — README + case study：可复现的性能数据表 + 鸿蒙壳章节 +
+      M6-0 的架构结论
 
 ---
 
@@ -604,22 +806,25 @@ core 的 `lib` 只有 ES2022 —— 它**写不出** `setInterval`，这不是�
 没签的原因很直接：代码签名证书要花钱、要过实名审核。项目没有发布渠道，
 为演示产物买证书不划算。但要做真实分发，这一步无法绕过。
 
-### 2. 安装包 98.10MB，其中 99% 不是这个项目写的代码
+### 2. 安装包 98.1MB，其中 99% 不是这个项目写的代码
+
+`win-unpacked/` 逐文件实测（**21 个文件，合计 321.2 MB**）：
 
 | 项 | 未压缩 |
 |---|---|
-| `crossdeck.exe`（Electron 44 运行时） | 234.6 MB |
+| `crossdeck.exe`（Electron 44 运行时主体） | 234.6 MB |
 | `dxcompiler.dll` / `LICENSES.chromium.html` | 24.6 / 19.5 MB |
 | `icudtl.dat` / `resources.pak` | 10.4 / 11.9 MB |
-| `locales/`（已裁到 en-US + zh-CN） | 约 6 MB |
-| **`app.asar`（本项目全部代码）** | **0.96 MB** |
+| `locales/`（已裁到 `en-US` + `zh-CN` 两个） | 1.12 MB |
+| **`app.asar`（本项目全部代码）** | **0.93 MB** |
 
-106.38MB → 98.10MB 靠裁 locale + `compression: maximum`。计划的验收线原本是
-`< 90MB`，**实测没过，因此修订口径而不是修订结论**：现在写 `< 100MB`。
-唯一能过线的做法是删掉 `dxcompiler.dll` + `dxil.dll`（约 −19.8MB → 78MB），
-但那会拿掉 WebGPU / Shader Model 6 的着色器编译路径 —— 代价不可测
-（本机 GPU 路径起不来，无从验证），不拿真实用户去赌一个数字。
-理由与取舍见 `docs/plans/2026-10-04-m4-m6-开发计划.md` §2.3。
+321.2MB → 98.1MB（**压缩率 30.5%**）靠 `electronLanguages` 裁 locale +
+`compression: maximum`。计划的验收线原本是 `< 90MB`，**实测没过，因此修订口径
+而不是修订结论**：现在写 `< 100MB`。唯一能过线的做法是删掉 `dxcompiler.dll` +
+`dxil.dll`（约 −19.8MB → 78MB），但那会拿掉 WebGPU / Shader Model 6 的
+着色器编译路径 —— 代价不可测（本机 GPU 路径起不来，无从验证），
+不拿真实用户去赌一个数字。理由与取舍见
+`docs/plans/2026-10-04-m4-m6-开发计划.md` §2.3，性能口径见 `docs/perf.md` §2.6。
 
 ### 3. 只有 Windows 产物
 
@@ -648,6 +853,35 @@ CROSSDECK_UPDATE_URL=http://127.0.0.1:8080 pnpm verify:update-feed
 会静默生效的分支，而静默降级的测试最容易变成"永远走不到的那条路"。
 怎么收口还没定，暂时保持手工 + 在这里写清。
 
+### 6. 鸿蒙壳只在 phone 形态验证过，而且是单窗口
+
+`pnpm verify:ohos` 跑通的是 **phone 模拟器**。计划文档里"4 个 HarmonyOS 7.0.0
+模拟器，含 `MateBook Pro (2in1)`"是一条**过期事实**：本机
+`%LOCALAPPDATA%/Huawei/Sdk/system-image/HarmonyOS-7.0.0/` 下**只有 `phone_all_x86`**,
+2in1 需要的 `pc_all_x86` 与 tablet 的 `tablet_x86` 都没下载 —— 新建的 2in1
+模拟器会在启动时报 `Unable to start the emulator`。
+
+后果是具体的：`window.multi` 在鸿蒙侧**从未被验证为 ✅**。
+`ports.ets` 里那条 `if (deviceType === '2in1' || deviceType === 'tablet')` 是真探测，
+但对应的设备形态没跑过。M6-3（多窗口 / 自由窗口）因此按计划退到
+「单窗口 + 能力探测降级」—— 这是计划里预留的退路，不是意外。
+
+### 7. 鸿蒙壳的能力表是「设备提供」，不是「壳已实现」
+
+`shared/ports.ets` 做的是**能力探测**（`detectCapabilities()` / `capabilityNote()` /
+`deviceKind()`）—— 它回答的是"**这台设备**有没有这项能力"，
+没有回答"**这个壳**把这项能力实现了没有"。
+
+具体地：`fs.scope` 与 `notify.system` 目前是**无条件** push 进能力表的，
+而 `@ohos.file.fs` 与 `@ohos.notificationManager` 的**端口实现还没有写**。
+所以截图里那两个 ✅ 的准确含义是「设备提供这项能力」，
+不是「这个壳已经能用它」。
+
+写清这一点是为了不让「平台能力对照」那张表读起来比实现更成熟。
+真实的缺口是：**Electron 壳有完整的 `FsPort` 实现，鸿蒙壳没有** ——
+core 的 `PathGuard` / `WorkspaceStore` 在鸿蒙侧是"能编译、能跑单测、
+但没有壳去调它"的状态。这是 M6 之后最该补的一项。
+
 ---
 
 ## 排查
@@ -662,10 +896,15 @@ CROSSDECK_UPDATE_URL=http://127.0.0.1:8080 pnpm verify:update-feed
 | 白屏、控制台报 CSP 拦截 | 生产 CSP 的 `script-src` 只有 `'self'`。注意 Vite 的 modulepreload polyfill 会注入行内脚本，已在 `vite.config.ts` 关掉 |
 | `selfcheck:web` 报「找不到 Chromium 内核浏览器」 | 它只用系统已有的 Edge / Chrome。装在别处时用 `CROSSDECK_BROWSER=<路径>` 指定 |
 | `selfcheck:web` 的 OPFS 断言失败 | OPFS 需要**安全上下文**：只认 `https://` 或 `127.0.0.1` / `localhost`。脚本起的就是 `127.0.0.1` —— 换成局域网 IP 会失效 |
+| `hvigorw` 报 `Invalid value of 'DEVECO_SDK_HOME'` / `spawn java ENOENT` | 前者要设 `DEVECO_SDK_HOME=<DEVECO>/sdk`（脚本已设）；后者是 DevEco 自带的 jbr 不在 PATH 里。手工跑时：`export PATH="$DEVECO/tools/node:$DEVECO/jbr/bin:$PATH"` |
+| `snapshot_display` 报 `suffix must be .jpeg` | 它只认 `.jpeg` —— 传 `.jpg` 会**什么都不产出**（不是报错退出，而是悄悄地不生成文件）。脚本因此在设备端用 `.jpeg`、本地落 `.jpg`，这个不对称是工具的脾气 |
+| 模拟器报 `Unable to start the emulator` | 该形态的系统镜像没下载（本机只有 `phone_all_x86`）。启动命令还需带 `-instancePath` 与 `-imageRoot`，否则日志会报 `g_deployedPath is not empty` |
+| `verify:ohos` 报「工具链」或「设备在线」失败 | **这是设计如此**，不是脚本坏了：环境不具备时如实报 `skipped` 并以非零码退出。装好 DevEco、起模拟器再跑（`DEVECO_HOME` 可覆盖默认路径） |
 
 ---
 
 ## 技术栈
 
 TypeScript（strict，含 `exactOptionalPropertyTypes`）· pnpm workspace · Electron 44 ·
-React 19 · Vite 8 · Tailwind 4 · esbuild · Node 20+
+React 19 · Vite 8 · Tailwind 4 · esbuild · Node 20+ ·
+ArkTS / DevEco（鸿蒙壳，`hvigor` + `hdc`，非 npm 生态）
