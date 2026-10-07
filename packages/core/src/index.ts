@@ -8,6 +8,9 @@
  *   M4.5 — events/：StreamBus（事件分发与退订）
  *          agent/：AgentRuntime（run 生命周期 + 工具链路）
  *                  BackpressurePump（产字↔推字解耦、帧对齐、合并中间态）
+ *   nav  — net/：SseParser（SSE 文本帧解析）
+ *                navigate.ts（navigate 上游帧 → 语义动作映射）
+ *          —— 上游只有一份解析与映射，三端共用；IO 才是一端一份。
  *
  * 铁律：本包**不得** import 任何平台 API（electron / node:* / @ohos.*）。
  * 由 `pnpm verify:core-purity` 强制检查，见 scripts/verify-core-purity.mjs。
@@ -24,6 +27,8 @@ export * from './fs/posixPath.js';
 export * from './fs/workspaceStore.js';
 export * from './fs/pathGuard.js';
 export * from './fs/resolveInWorkspace.js';
+export * from './net/sse.js';
+export * from './net/navigate.js';
 export * from './events/streamBus.js';
 export * from './agent/deps.js';
 export * from './agent/backpressure.js';
