@@ -1,0 +1,9 @@
+event: token
+data: "你好！我是谭泳超，12 年软件开发经验（前端连续 10 年、Web 前端架构师出身），近 1 年主攻 AI Agent 方向，能独立打通「AI Agent 后端编排 + 前端 / 客户端交付」全链路，求职意向为 AI 应用开发 / Agent 开发工程师。\n\n如需了解某段经历、项目或技能的细节，随时告诉我。"
+
+event: sources
+data: ["简历 / summary / 求职意向与定位","简历 / summary / 核心亮点"]
+
+event: done
+data: __DONE__
+

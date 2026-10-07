@@ -1,0 +1,35 @@
+{
+  "scenario": "plain",
+  "totalMs": 1645,
+  "status": 200,
+  "headers": {
+    "x-powered-by": "Express",
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "connection": "keep-alive",
+    "x-accel-buffering": "no",
+    "date": "Wed, 07 Oct 2026 05:08:53 GMT",
+    "transfer-encoding": "chunked"
+  },
+  "chunkCount": 3,
+  "chunks": [
+    {
+      "i": 0,
+      "atMs": 1644,
+      "len": 379,
+      "escaped": "\"event: token\\ndata: \\\"你好！我是谭泳超，12 年软件开发经验（前端连续 10 年、Web 前端架构师出身），近 1 年主攻 AI Agent 方向，能独立打通「AI Agent 后端编排 + 前端 / 客户端交付」全链路，求职意向为 AI 应用开发 / Agent 开发工程师。\\\\n\\\\n如需了解某段经历、项目或技能的细节，随时告诉我。\\\"\\n\\n\""
+    },
+    {
+      "i": 1,
+      "atMs": 1644,
+      "len": 101,
+      "escaped": "\"event: sources\\ndata: [\\\"简历 / summary / 求职意向与定位\\\",\\\"简历 / summary / 核心亮点\\\"]\\n\\n\""
+    },
+    {
+      "i": 2,
+      "atMs": 1645,
+      "len": 28,
+      "escaped": "\"event: done\\ndata: __DONE__\\n\\n\""
+    }
+  ]
+}
