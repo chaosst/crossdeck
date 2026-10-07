@@ -361,46 +361,363 @@ data 是整段答案，全程静默 1.6–2.8s 后一次性到达。
 
 拆三个小步，**各自独立 commit**，不要一次提交。
 
-#### T6-a · 端口定义
+> **⚠️ 先说清楚"在哪改"（原任务卡没写，'端口定义'四个字容易被理解错）**
+>
+> **不是** `packages/core/src/ports.ts`。那个文件装的是**平台能力**
+> （`FsPort` / `DialogPort` / `ClipboardPort` …），由三端壳各提供一份实现。
+>
+> **模型端口在 `packages/core/src/agent/model.ts`** —— 它属于 Agent 内核，
+> 与 `runtime.ts` / `backpressure.ts` / `tools.ts` 同层。
+> 判断标准：**"这东西是不是每个平台都要重写一遍实现？"**
+> 「读文件」是三端各写一份 → 归 `ports.ts`；
+> 「流式问答」是 core 逻辑，三种壳**用同一套代码** → 归 `agent/`。
+>
+> 现状（改造前）：`model.ts` 里已有 `interface ModelPort { complete(req): Promise<ModelReply> }`
+> 和它的唯一实现 `class ScriptedModel`。**T6-a 是把这两个改掉，不是新建文件。**
 
-- 改成**回调式**端口（形状以 T1 结论为准）：一个 sink 带三个回调（数据 / 结束 / 错误），  
-  `stream(req, sink)` 返回取消函数。
-- **保留** `ScriptedModel` 并让它实现这个新端口 —— 这样自检在无网络时仍可跑。  
-  这件事要在注释里写清定位：**它不是"假实现"，是"无网络时的确定性上游"**，  
-  与项目"不装假实现"的原则不冲突 —— 但**必须如实标注**（UI 上显示当前是脚本上游）。
+#### T6-a · 端口定义（改 `core/src/agent/model.ts`）
+
+**整个改动就是"把一次性 Promise 换成回调流"，一共 4 个动作：**
+
+| # | 动作 | 函数 / 类型名 | 所在文件 | 一句话说明 |
+|---|---|---|---|---|
+| 1 | 删掉一次性方法 | ~~`ModelPort.complete(req): Promise<ModelReply>`~~ | `agent/model.ts` | 它是"等整段回答"的根源 —— 留着它就永远无法真流式 |
+| 2 | 新增流式回调接口 | `interface ModelSink` | `agent/model.ts` | 回调：`onChunk` / `onToolCall?` / `onEnd` / `onError`，**都无返回值** |
+| 3 | 新增流式方法 | `ModelPort.stream(req, sink): Cancel` | `agent/model.ts` | 同步返回取消函数；数据靠 sink 回调推 |
+| 4 | 让脚本实现跟着改 | `ScriptedModel.stream(req, sink)` | `agent/model.ts` | 把原来一次性返回的长文本**切成多片**回调出去 |
+
+**函数签名（照抄即可，函数体留 TODO 给实现者手写）：**
+
+```ts
+// agent/model.ts —— 改造后
+
+/** 保留：请求体不变。 */
+export interface ModelRequest {
+  readonly sessionId: string;
+  readonly prompt: string;
+}
+
+/** 保留：工具调用不变。 */
+export interface ModelToolCall {
+  readonly name: string;
+  readonly args: unknown;
+}
+
+/**
+ * 流式回调。**主回调都无返回值** —— 这是 T1 spike 实测能过 ArkTS 的形状。
+ * ⚠️ 形参类型必须是 string：T1 的反向断言就是拿 `onChunk(number)` 撞出来的。
+ */
+export interface ModelSink {
+  /** 收到一段文本增量。**是增量，调用方负责追加**。 */
+  onChunk(text: string): void;
+  /**
+   * 模型决定调工具。**可选** —— 只有真会调工具的上游才需要实现它。
+   * （为什么不用"把工具调用编成文本塞进 onChunk"：见下方"工具链的坑"。）
+   */
+  onToolCall?(call: ModelToolCall): void;
+  /** 上游正常说完。恰好调用一次。 */
+  onEnd(): void;
+  /** 上游出错。恰好调用一次，与 onEnd 互斥。 */
+  onError(message: string): void;
+}
+
+export interface ModelPort {
+  /**
+   * 发起一次流式补全。
+   *
+   * @returns 取消函数。调用方 abort / 关窗时**必须真的调用它** ——
+   *   否则 HTTP 连接会悬着，而且没有任何地方能断言"连接已断"。
+   */
+  stream(req: ModelRequest, sink: ModelSink): Cancel; // Cancel 来自 agent/deps.ts
+}
+```
+
+**`ScriptedModel.stream` 要做的事（函数体留 TODO，实现者手写）：**
+
+1. 复用现在的剧本选择逻辑（`prompt.includes(TOOL_SCENARIO_MARKER)` → 走工具分支），
+   **但工具调用不能再从 `ModelReply.toolCalls` 里带出来** ——
+   见下方"⚠️ 工具链的坑"。
+2. 把最终要说的那段文本，按固定粒度（建议仍用 3 字符，与 `BACKPRESSURE_DEFAULTS.produceChunkSize` 对齐）
+   **分多次** `sink.onChunk(...)`；每片之间用注入的 `deps.every(...)` 推进，
+   **不许用真实定时器**（core 拿不到 `setTimeout`，这正是它能被确定性测试的原因）。
+3. 切完调 `sink.onEnd()`。
+4. 返回的取消函数要**摘掉那个 `every` 调度**（否则 run 结束后定时器泄漏，
+   会被 `droppedAfterTerminal` 抓到）。
+
+**⚠️ 工具链的坑（原任务卡漏了，这里必须提前定）**
+
+现在工具调用是**跟着返回值一起**出来的：`ModelReply.toolCalls`。
+改成回调后 `ModelSink` 只有文本三回调，**工具调用没有出口了**。
+两条路：
+
+- **路 A（推荐）**：`ModelSink` 加第四个可选回调 `onToolCall(call: ModelToolCall)`。
+  代价：sink 不再是"纯文本流"，但语义完整。
+- **路 B**：把工具调用也编成文本标记（如 `[[tool:echo]]`）塞进 `onChunk`，
+  由 runtime 侧扫出来。代价：**回到"解析魔法字符串"**，脆弱且难测。
+
+> **拍板：走路 A。** 理由：现状 `ScriptedModel` 就是靠 `TOOL_SCENARIO_MARKER`
+> 这个魔法字符串选剧本的 —— 那是"输入侧的标记"，可以接受；
+> 但**输出侧**再靠字符串解析工具调用，等于把类型系统扔掉。T6-c 断言会因此多一条。
+> 于是 `ModelSink` 实际是 4 个回调：`onChunk` / `onToolCall?` / `onEnd` / `onError`。
+
+**`ModelReply` / `ModelToolCall` 的去留**
+
+- `ModelToolCall` **保留**（`onToolCall` 要用）。
+- `ModelReply` **删掉** —— 它是"一次性"的形状，留着会诱使后人改回去。
+  （若 `verify-core-agent.mjs` 里有 import 它，一并改；见 T6-c。）
+
+**`ScriptedModel` 的定位注释（必须写进文件头，别省）**
+
+- 它**不是"假实现"**，是"**无网络时的确定性上游**" —— 与项目"不装假实现"的原则不冲突。
+- 但**必须在 UI 上如实标注**当前是脚本上游（T12 自检报告里也要带这个字段）。
+  理由：自检产物必须可复现（真模型每次吐的字都不同），但用户看到"逐字输出"时，
+  有权知道那是脚本在滴，不是模型在答。
+
+**完成判据**
+
+- `pnpm typecheck` 通过（`ModelReply` 删干净后，所有引用点都会由编译器点名）。
+- `scripts/verify-core-agent.mjs` 里凡 import `ModelReply` 的地方改到能编译（内容重写在 T6-c）。
+- `pnpm verify:core-purity` 仍绿 —— `model.ts` 不许出现 `setTimeout` / `setInterval`。
+
+**为什么这一步单独 commit**：它是**纯接口改动**，`runtime.ts` 还没动。
+先让编译器把"所有受影响的点"报出来，再进 T6-b 改实现。
+（这就是"先红"——不是测试红，是**编译红**。）
+
+```mermaid
+classDiagram
+    class ModelPort {
+        <<interface>>
+        +stream(req, sink) Cancel
+    }
+    class ModelSink {
+        <<interface>>
+        +onChunk(text: string) void
+        +onToolCall(call) void
+        +onEnd() void
+        +onError(message: string) void
+    }
+    class ScriptedModel {
+        -reply: string
+        -toolOutputPrefix: string
+        +stream(req, sink) Cancel
+    }
+    class AgentRuntime {
+        -model: ModelPort
+        -drive(run) void
+    }
+
+    ModelPort <|.. ScriptedModel : 实现
+    AgentRuntime --> ModelPort : 注入（构造时）
+    AgentRuntime ..> ModelSink : 传入 stream()
+    ModelPort ..> ModelSink : 通过回调推数据
+
+    note for ModelSink "三个主回调都无返回值<br/>（T1 实测可过 ArkTS）"
+    note for ScriptedModel "不是假实现，是<br/>无网络时的确定性上游"
+```
 
 #### T6-b · 运行时改造（`AgentRuntime.#drive`）
 
-从"等整段再 push"改成回调驱动。要点：
+从"等整段再 push"改成**回调驱动**。这是整套改造里唯一动 `runtime.ts` 的一步。
 
-- 上游给数据 → **立刻**喂进背压泵。**严禁攒到最后一次性喂** —— 攒了就退回"合成流"，  
-  这次的活儿就白干了。这条要写进注释。
-- 上游说结束 → 关闭上游。**顺序不能反**（现有代码里已有这条注释，别改反）。
-- 上游报错 → **恰好一个** error 终态。
-- **断流兜底（必须单独设计，不是顺手加）**：上游既没说结束也没报错就断了  
-  → 仍然必须收尾出一个终态。  
-  为什么必须有：navigate 的 `/api/rag/ask` **根本不发 done**；本期虽只接 `resume/chat`，  
-  但契约上要防。否则失败模式是"token 全到齐、UI 永远转圈"。
-- abort → **真的调用**上游返回的取消函数（且要能断言它被调用过）。
-- 终态之后上游还回调 → 计入既有的 `droppedAfterTerminal`（应当恒为 0）。
+**改造前后的差别（先看图，再看动作清单）**
 
-#### T6-c · 断言重写 + 新增
+```
+改造前（现状 #drive）：
+  pump.start()
+  reply = await model.complete(req)      ← 等到整段回答才返回（首 token 延迟 = 全长耗时）
+  for (call of reply.toolCalls) runTool  ← 工具在这里跑
+  pump.push(reply.text)                  ← 一次性把全文塞给泵
+  pump.closeUpstream()
 
-- **先红**：新增 4 条断言，确认它们挂：
-  1. 逐帧顺序（上游分 3 次给数据 → 渲染侧按序收到，不是一次到齐）
-  2. 上游中途报错 → **恰好一个** error 终态
-  3. 上游**不发结束**就断 → 仍然收尾（一个终态）
-  4. abort 后上游的取消函数**被调用**（用计数探针）
-- **后绿**：改实现让它们过。
-- **回归**：`scripts/verify-core-agent.mjs` 原 **83 条**里依赖"泵滴流"的断言  
-  **重写而不是删除**，重写后**总数只增不减**。这是本期最大的一块成本，别低估。
-- **变异测试（必须做，至少这两条）**：
-  - 去掉断流兜底 → 断言 3 应挂。
-  - 把"逐块喂"改成"攒全文一次喂" → 断言 1 应挂。  
-    ⚠️ 这条最关键：它证明"真流式"这件事真的被测住了。
-- **如实记录**：`#settle` 的重复终结保护在改造后**是否变可达**？  
-  变可达 → 补一条能打到它的断言；仍不可达 → 继续如实写在脚本头部（不许假装测到了）。
+改造后（目标 #drive）：
+  pump.start()
+  cancel = model.stream(req, sink)       ← 立刻返回，后续靠 sink 推
+  // sink.onChunk   → pump.push(text)    ← 字到了就喂，一个都不攒
+  // sink.onToolCall→ await runTool(...) ← 工具调用时机由上游决定
+  // sink.onEnd     → pump.closeUpstream()  ← 顺序不能反
+  // sink.onError   → settle(error)      ← 恰好一个
+```
 
+**具体动作（5 步，函数体留 TODO）：**
+
+| # | 动作 | 在哪 | 要点 |
+|---|---|---|---|
+| 1 | 删掉 `await this.#model.complete(...)` 那段 try/catch | `#drive` | 它"等整段"是延迟的根源 |
+| 2 | 构造 `sink` 对象 | `#drive` 内 | 4 个回调分别接到 pump / runTool / settle |
+| 3 | `const cancel = this.#model.stream(req, sink)` | `#drive` | **同步**返回；存到 `run.cancel` 供 abort 用 |
+| 4 | `ActiveRun` 加字段 `cancel: Cancel \| null` | `interface ActiveRun` | 让 abort 能拿到它 |
+| 5 | `abort()` 里真的调用 `run.cancel?.()` | `abort()` | 现在是"设个 `aborted=true` 就完事"，连接不会断 |
+
+**断流兜底（必须单独设计，不是顺手加）**
+
+上游既没说结束也没报错就断了 → 仍然必须收尾出一个终态。
+为什么必须有：navigate 的 `/api/rag/ask` **根本不发 done**；本期虽只接 `resume/chat`，
+但契约上要防。否则失败模式是"token 全到齐、UI 永远转圈"。
+
+> **⚠️ 这里有个真问题，原任务卡没写清楚：谁来判"断了"？**
+>
+> `stream(req, sink)` 是同步返回的，上游不发 `onEnd` 也不会"抛" ——
+> 从 runtime 视角，它只是**永远等不到回调**。所以"断了"这件事**runtime 自己判断不了**，
+> 必须由**发起方**（壳的 HTTP 实现）在看不住的时候主动调 `sink.onError(...)`。
+>
+> 于是"断流兜底"**分成两半**：
+> - **runtime 半边**：`#drive` 里加一个"兜底守卫"—— 若 `stream()` 同步返回后，
+>   过了若干个调度周期既没 `onEnd` 也没 `onError`，且 `onChunk` 也停了 → 主动 settle(error)。
+>   用注入的 `deps.every` 实现（**不许 setTimeout**）。
+> - **壳半边**（T7/T8 做）：HTTP 实现必须在"首帧超时"和"流被静默关闭"时**主动调 `onError`**，
+>   不能指望 runtime 猜出来。
+>
+> **这个"两半"的切分点是本期最容易出 bug 的地方** —— 两边都以为对方会兜底，
+> 结果谁也不兜，UI 就永远转圈。T6-c 的断言 3 专门打这个。
+
+**`#settle` 的重复终结保护是否变可达？**
+
+改造前它**不可达**（abort / drained / emit 三条路径都先判过 settled，
+见 `verify-core-agent.mjs` 头部如实记录）。改造后多了一条路径：
+`sink.onError` 与兜底守卫可能**同时**触发 → 变**可达**。
+→ T6-c 要补一条能真打到它的断言（"上游 onError 之后兜底守卫再触发一次，仍只一个终态"）。
+
+下图是改造后的完整时序（含断流兜底与 abort 两条异常路径）：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant IPC as IPC handler
+    participant RT as AgentRuntime
+    participant Pump as BackpressurePump
+    participant MP as ModelPort (壳实现)
+    participant Up as navigate 上游
+
+    IPC->>RT: startRun({sessionId, input})
+    RT->>Pump: start()
+    RT->>MP: stream(req, sink)
+    Note over MP,Up: 发起 HTTP 请求
+    MP->>Up: POST /api/resume/chat
+    RT-->>IPC: { runId }（同步返回，此时 start 已 publish）
+
+    loop 每个 SSE token 帧
+        Up-->>MP: event: token
+        MP->>MP: TextDecoder 解码 → SseParser → mapNavigate*
+        MP->>RT: sink.onChunk(text)
+        RT->>Pump: push(text) —— 立刻喂，一个都不攒
+        Pump-->>IPC: flush(text) → token 事件
+    end
+
+    Up-->>MP: event: done
+    MP->>RT: sink.onEnd()
+    RT->>Pump: closeUpstream()
+    Pump->>RT: drained(summary)
+    RT-->>IPC: done 事件（终态）
+
+    alt 上游静默断流（既无 done 也无 error）
+        Note over RT: 兜底守卫（deps.every）察觉无进展
+        RT-->>IPC: error 事件（恰好一个）
+    else 用户点停止
+        IPC->>RT: abort(runId)
+        RT->>MP: cancel() —— 真的断连接
+        RT-->>IPC: error(ABORTED) 事件
+    else 上游报错
+        MP->>RT: sink.onError(msg)
+        RT-->>IPC: error 事件（恰好一个）
+    end
+```
+
+#### T6-c · 断言重写 + 新增（`scripts/verify-core-agent.mjs`）
+
+**这是本期最大的一块成本，别低估。** 现有 **84 条**断言里，凡依赖"泵自己按 12ms 滴流"
+的都**要重写** —— 因为 T6-b 之后，"什么时候有字"由**上游回调**决定，不再由 `produceIntervalMs` 决定。
+
+**动作清单：**
+
+| # | 动作 | 说明 |
+|---|---|---|
+| 1 | **先红**：新增 5 条断言 | 见下表；写完先确认它们**挂** |
+| 2 | 重写"泵滴流"类断言 | 从"advance(12) 出一片"改成"上游 push 一片 → 断言立刻到渲染侧" |
+| 3 | 加"测试用 ModelPort 实现" | 一个能**手动控制**何时 onChunk/onEnd/onError 的假上游（下面有图） |
+| 4 | 总数校验 | 重写后**只增不减**（现 84 条 → 目标 ≥ 89） |
+
+**新增的 5 条断言：**
+
+| # | 断言 | 打的是什么 |
+|---|---|---|
+| 1 | 上游分 3 次 onChunk → 渲染侧按序收到 3 次，**不是一次到齐** | 真流式（最关键）|
+| 2 | 上游中途 onError → **恰好一个** error 终态 | 错误路径 |
+| 3 | 上游**不发 onEnd 就静默** → 兜底守卫仍收尾（一个终态） | 断流兜底 |
+| 4 | abort 后上游的 `cancel` **被调用**（计数探针） | 连接真的断了 |
+| 5 | onError 之后再触发兜底守卫 → **仍只一个终态**（打 `#settle`） | 重复终结保护 |
+
+**"测试用 ModelPort"长什么样（这是重写断言的钥匙）：**
+
+现有断言之所以能 0ms 真实等待，是因为注入了手动时钟。新端口同理 ——
+测试实现一个**手动可控的假上游**，把"上游何时给字"变成代码里的显式调用：
+
+```ts
+// verify-core-agent.mjs 里（不是 core 源码）
+class ManualModel implements ModelPort {
+  #sink = null;
+  stream(req, sink) {
+    this.#sink = sink;
+    return () => { this.cancelled += 1; };   // 计数探针：断言它被调用
+  }
+  // 测试代码主动调这三个来模拟上游行为：
+  emit(text)  { this.#sink.onChunk(text); }
+  end()       { this.#sink.onEnd(); }
+  fail(msg)   { this.#sink.onError(msg); }
+}
+```
+
+这样断言就变成"显式调 `emit('a')` → `advance(0)` → 断言收到 `'a'`"，
+**没有任何 12ms 的隐式节奏**，读起来就是数据流本身。
+
+**变异测试（必须做，至少这两条）：**
+
+- 去掉断流兜底 → 断言 3 应挂。
+- 把"逐块喂"改成"攒全文一次喂" → 断言 1 应挂。  
+  ⚠️ 这条最关键：它证明"真流式"这件事真的被测住了。
+
+**如实记录（不许假装测到了）：**
+
+`#settle` 的重复终结保护改造后**变可达**了（见 T6-b），所以断言 5 必须能**打死它** ——
+写完要真的把 `if (run.settled) return false` 删掉，确认断言 5 挂，再恢复。
+若删掉后断言 5 不挂，说明它仍然没打到，要重写。
+
+下图是 run 的生命周期状态机（含改造后新增的"兜底收尾"转移）。
+**转移的触发条件写在图下的表里** —— 不塞进边标签，否则长标签会互相压住看不清：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: startRun()
+    Running --> Running: onChunk
+    Running --> Running: onToolCall
+    Running --> Done: onEnd
+    Running --> Failed: onError
+    Running --> Failed: abort
+    Running --> Failed: 兜底超时
+    Done --> [*]
+    Failed --> [*]
+
+    note right of Running
+        onChunk → pump.push → token 事件
+        onToolCall → runTool → tool / tool_end 事件
+    end note
+    note right of Failed
+        onError / 兜底 / abort 可能同时触发
+        → #settle 必须挡成恰好一个
+    end note
+```
+
+| 转移 | 触发 | 产生的事件 |
+|---|---|---|
+| Running → Running | `sink.onChunk(text)` | `token`（经泵 flush）|
+| Running → Running | `sink.onToolCall(call)` | `tool` → `tool_end` |
+| Running → Done | `sink.onEnd()` → `closeUpstream()` → 队列排空 → `drained()` | `done`（终态）|
+| Running → Failed | `sink.onError(msg)` | `error`（恰好一个）|
+| Running → Failed | 兜底守卫察觉上游静默（`deps.every`） | `error`（恰好一个）|
+| Running → Failed | `abort(runId)` → 调 `cancel()` | `error(ABORTED)` |
+
+> `Done` 之前有一个**隐式的 Draining 过渡**：`onEnd` 之后上游已停，但队列里可能还有字，
+> 必须排空才算完 —— 这段由 `BackpressurePump` 内部状态承担，不单列成一个可见状态，
+> 否则状态机会多出一层，反而看不清主线。
 
 **交付物**：`core/src/agent/{model,runtime}.ts` + `scripts/verify-core-agent.mjs`。
 
