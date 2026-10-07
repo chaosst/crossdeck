@@ -19,6 +19,11 @@ import { ALL_CAPABILITIES, capabilityNote, detectCapabilities, deviceKind } from
 import type { Capability } from '../shared/contract/capability';
 import { runSpikeReport } from '../shared/probe/spikeReport';
 import type { SpikeResult } from '../shared/probe/spikeReport';
+// T1 spike：端口形状对照（回调式 vs 异步可迭代）—— 必须**真的调用**才有鉴别力
+import { runCallbackProbe, runAsyncProbe } from '../shared/probe/portShape';
+// T2 spike：模拟器 → 宿主机的可达性（结果同时写 hilog，前缀 [NETPROBE]）
+import { runNetProbe } from '../shared/probe/netProbe';
+import type { NetProbeResult } from '../shared/probe/netProbe';
 
 const CARD = '#171A21';
 const TEXT = '#E6E6E6';
@@ -51,6 +56,8 @@ struct Index {
   @State paused: boolean = false;
   @State running: boolean = false;
   @State spike: SpikeResult[] = [];
+  @State portShape: string = '未运行';
+  @State netProbe: string = '未运行';
 
   private store: SessionStore = new SessionStore();
   private agent: AgentRuntime | null = null;
@@ -62,6 +69,21 @@ struct Index {
     this.kind = deviceKind();
     this.capabilities = detectCapabilities();
     this.spike = runSpikeReport();
+
+    // T1：两组端口形状各自真实调用一次（只 import 不调用 = 编译器可能不检查）
+    const shapeA: string = runCallbackProbe('A组');
+    runAsyncProbe('B组').then((shapeB: string): void => {
+      this.portShape = `A(回调式)=${shapeA} ｜ B(async可迭代)=${shapeB}`;
+    });
+
+    // T2：网络可达性（三种 URL 各打一次）—— 同一份结果也写进 hilog（前缀 [NETPROBE]）
+    runNetProbe().then((rs: NetProbeResult[]): void => {
+      const lines: string[] = [];
+      for (const r of rs) {
+        lines.push(`${r.ok ? '✅' : '❌'} ${r.url}  ${r.detail}`);
+      }
+      this.netProbe = lines.join('\n');
+    });
 
     const runtime = new AgentRuntime({
       deps: {
@@ -210,6 +232,20 @@ struct Index {
             Text(r.detail).fontSize(10).fontColor(DIM).layoutWeight(1)
           }.width('100%')
         }, (r: SpikeResult) => r.layer)
+
+        // ⑤ T1 spike 证据：端口形状（回调式 vs 异步可迭代）
+        this.sectionTitle('⑤ T1 spike：端口形状，ArkTS 吃得下哪个')
+        Text('A=回调式（sink 三回调 + 返回取消函数）｜ B=AsyncIterable + for await')
+          .fontSize(11).fontColor(DIM)
+        Text(this.portShape).fontSize(11).fontColor(ACCENT).width('100%')
+        Text('两者都编译过 → 结论以编译器实测为准；本行能显示 = 运行时也真的跑通了。')
+          .fontSize(10).fontColor(DIM)
+
+        // ⑥ T2 spike 证据：模拟器 → 宿主机可达性
+        this.sectionTitle('⑥ T2 spike：模拟器 → 宿主机 可达性')
+        Text('宿主机 node 服务器 @ :3901（/ping → pong-from-host）')
+          .fontSize(11).fontColor(DIM)
+        Text(this.netProbe).fontSize(11).fontColor(TEXT).width('100%')
       }
       .width('100%')
       .padding(18)
