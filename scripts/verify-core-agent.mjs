@@ -20,6 +20,7 @@
  * ── 变异测试记录（用来确认这些断言真的有鉴别力）────────────────────
  * 第一次就全绿却抓不住错误的测试等于没测。改坏实现后实测：
  *
+ * 轮1（T6-c 之前，84 条）：
  * | 变异                                     | 挂掉断言数 |
  * |-----------------------------------------|--------|
  * | publish 不先快照，直接遍历活 Set                  | 3      |
@@ -27,12 +28,27 @@
  * | 队列超限只留尾部（丢头部）                          | 1      |
  * | #settle 不再挡重复终结                          | **0**  |
  *
- * 最后一行是**如实记录的坏消息**：`AgentRuntime.#settle` 里的
- * `if (run.settled) return false` 在现有调用方下**不可达** ——
- * abort / drained / emit 三条路径都已经先判过 settled。
- * 它是有意保留的纵深防御（一个 run 发两个 done 会让 usage 统计被算两遍，
- * 而且不崩、不报错，只是数字悄悄不对），但既然不可达，就不能假装测到了。
- * 要么将来给它找到真实触发路径，要么在精简时删掉。
+ * 轮1 最后一行是当时**如实记录的坏消息**：`#settle` 的 `if (run.settled) return false`
+ * 那时**不可达**（abort / drained / emit 三条路径都先判过 settled）。
+ * **T6-b 之后它变可达了** —— 新增的"断流守卫"与 `onError` 可能先后触发同一个 run。
+ * 所以 T6-c 补了断言 ⑤ 专门打它（见下）。
+ *
+ * 轮2（T6-c，100 条；都是改 `runtime.ts` 后重编译再跑）：
+ * | 变异                                   | 挂掉断言数 |
+ * |---------------------------------------|--------|
+ * | M1 删掉断流守卫整段                            | 3      |
+ * | M2 去掉守卫的"超时"判断（一静默就收尾）                | 2      |
+ * | M3 stopAll 不 cancel 上游                    | 1      |
+ * | M4 #settle 不 cancel 上游                    | 2      |
+ * | M5 守卫不看 `ended`                          | **0**  |
+ *
+ * M5 存活属于**第二种情况，不是测试弱**：`ended` 这一步在当前实现下是**防御性冗余**
+ * （正常路径里 `drained` 一定先于 60s 超时到达）。
+ * ⚠️ 判断"变异存活"要先分清：①测试没鉴别力（要补断言）；②变异体没改可观测行为 / 是纵深防御。
+ * 把②误判成①，会去加一堆抓不住东西的断言。
+ * 反例（正向）：M2 一开始也容易被想当然地当成"没人抓得住"，是**特意补了 n6
+ * （停顿未超时不被误杀）**才把它变成有鉴别力的 —— 断言不是越多越好，
+ * 是要写到能区分"真错"与"没错"。
  *
  * 另外记一笔踩过的坑：最初那条"派发中途退订自己"的断言**没有鉴别力** ——
  * V8 的 Set 迭代器删除当前元素时本来就不跳过后继，所以无论有没有快照都通过。
@@ -61,6 +77,7 @@ const {
   AgentRuntime,
   ScriptedModel,
   SCRIPTED_REPLY,
+  STALL_GUARD_DEFAULTS,
   StreamBus,
   ToolRegistry,
   echoTool,
@@ -149,6 +166,39 @@ function makeCollector(runtime) {
     text: () => events.filter((e) => e.type === 'token').map((e) => e.text).join(''),
     terminal: () => events.filter((e) => e.type === 'done' || e.type === 'error'),
   };
+}
+
+/**
+ * 手动可控的**假上游** —— T6-c 的钥匙。
+ *
+ * T6-b 之后，"什么时候有字"由**上游回调**决定，不再由 pump 的 produceIntervalMs 决定。
+ * 所以断言不能再"推进 12ms 等泵吐一片"，而要能**显式**决定何时 onChunk / onEnd / onError ——
+ * 这个类就是那个旋钮。`cancelCalls` 是计数探针，用来断言 abort 真的断了连接。
+ */
+class ManualModel {
+  constructor() {
+    this.sink = null;
+    this.cancelCalls = 0;
+  }
+  stream(req, sink) {
+    this.req = req;
+    this.sink = sink;
+    return () => {
+      this.cancelCalls += 1;
+    };
+  }
+  /** 模拟上游吐一段增量 */
+  emit(text) {
+    this.sink.onChunk(text);
+  }
+  /** 模拟上游正常说完 */
+  end() {
+    this.sink.onEnd();
+  }
+  /** 模拟上游报错 */
+  error(message) {
+    this.sink.onError(message);
+  }
 }
 
 console.log(`\n加载 core 产物：${CORE_DIST}\n`);
@@ -390,10 +440,10 @@ console.log('\n── ② BackpressurePump：帧对齐 / 暂停 / 合并 / 收�
 // ─────────────────────────────────────────────────────────────
 // ③ AgentRuntime —— 一次 run 的完整生命周期
 // ─────────────────────────────────────────────────────────────
-console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ────────────');
+console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 + 断流兜底 ──');
 {
   const s = createFakeScheduler();
-  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel() });
+  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel({ deps: s.deps }) });
   const col = makeCollector(runtime);
 
   const { runId } = runtime.startRun({ sessionId: 's1', input: 'ping' });
@@ -434,7 +484,7 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
 {
   // 暂停 / 恢复：走 runtime 这一层（handler 用的就是这个）
   const s = createFakeScheduler();
-  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel() });
+  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel({ deps: s.deps }) });
   const col = makeCollector(runtime);
 
   const { runId } = runtime.startRun({ sessionId: 's2', input: 'ping' });
@@ -459,7 +509,7 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
 {
   // abort：必须补一个终结事件，否则 UI 永远停在"流式中"
   const s = createFakeScheduler();
-  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel() });
+  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel({ deps: s.deps }) });
   const col = makeCollector(runtime);
 
   const { runId } = runtime.startRun({ sessionId: 's3', input: 'ping' });
@@ -482,7 +532,7 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
 {
   // 工具链路：模型先调工具，再回答
   const s = createFakeScheduler();
-  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel() });
+  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel({ deps: s.deps }) });
   const col = makeCollector(runtime);
 
   check('默认注册了 echo 工具', runtime.tools.has('echo') === true);
@@ -509,7 +559,15 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
   const s = createFakeScheduler();
   const runtime = new AgentRuntime({
     deps: s.deps,
-    model: { complete: () => Promise.resolve({ text: 'x', toolCalls: [{ name: 'nope', args: {} }] }) },
+    model: {
+      // 上游先要一个未知工具，再吐字收尾
+      stream: (_req, sink) => {
+        sink.onToolCall?.({ name: 'nope', args: {} });
+        sink.onChunk('x');
+        sink.onEnd();
+        return () => {};
+      },
+    },
   });
   const col = makeCollector(runtime);
   runtime.startRun({ sessionId: 's5', input: 'ping' });
@@ -528,7 +586,13 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
   const s = createFakeScheduler();
   const runtime = new AgentRuntime({
     deps: s.deps,
-    model: { complete: () => Promise.reject(new Error('上游 503')) },
+    model: {
+      // 上游在 stream() 里就**同步**报错（"参数校验失败立刻报错"那类）
+      stream: (_req, sink) => {
+        sink.onError('上游 503');
+        return () => {};
+      },
+    },
   });
   const col = makeCollector(runtime);
   runtime.startRun({ sessionId: 's6', input: 'ping' });
@@ -542,12 +606,15 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
   check('错误消息带上了原因', String(errs[0]?.message).includes('503'), String(errs[0]?.message));
   check('上游失败后调度摘干净', s.pending() === 0, String(s.pending()));
   check('上游失败后 run 出账', runtime.activeRunCount === 0, String(runtime.activeRunCount));
+  // 这条同时是"同步 settle 后守卫泄漏"的回归断言：上游在 stream() 里就报了错，
+  // 那时 #settle 已跑、守卫是后注册的 —— 不自查摘除就会留下一个永不停的定时器。
+  check('同步报错后调度也摘干净（守卫没漏摘）', s.pending() === 0, String(s.pending()));
 }
 
 {
   // stopAll：会话被删 / 窗口关闭时调用
   const s = createFakeScheduler();
-  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel() });
+  const runtime = new AgentRuntime({ deps: s.deps, model: new ScriptedModel({ deps: s.deps }) });
   runtime.startRun({ sessionId: 's7', input: 'a' });
   runtime.startRun({ sessionId: 's8', input: 'b' });
   await tick();
@@ -566,7 +633,14 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
   tools.register({ name: 'boom', description: '总是失败', run: () => { throw new Error('炸了'); } });
   const runtime = new AgentRuntime({
     deps: s.deps,
-    model: { complete: () => Promise.resolve({ text: 'ok', toolCalls: [{ name: 'boom', args: null }] }) },
+    model: {
+      stream: (_req, sink) => {
+        sink.onToolCall?.({ name: 'boom', args: null });
+        sink.onChunk('ok');
+        sink.onEnd();
+        return () => {};
+      },
+    },
     tools,
   });
   const col = makeCollector(runtime);
@@ -588,6 +662,134 @@ console.log('\n── ③ AgentRuntime：run 生命周期 + 工具链路 ──�
     threw = true;
   }
   check('工具重复注册直接抛错（静默覆盖 = 上线后才发现的 bug）', threw === true);
+}
+
+// ─────────────────────────────────────────────────────────────
+// ③-b T6-c 新增：真流式 / 错误路径 / 断流兜底 / abort 断连 / 重复终结
+//      这 5 组用的是"手动可控假上游"（ManualModel）—— 因为 T6-b 之后
+//      "什么时候有字"由上游决定，只有显式控制上游才能验到这些路径。
+// ─────────────────────────────────────────────────────────────
+{
+  // ① 真流式：上游分 3 次给字，渲染侧就该按序收到 3 次（不是攒够一次给）
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  runtime.startRun({ sessionId: 'n1', input: 'ping' });
+  await tick();
+
+  mm.emit('第一段');
+  s.advance(20);
+  await tick();
+  check('上游第 1 次 onChunk → 渲染侧随即收到（没攒着）', col.text() === '第一段', JSON.stringify(col.text()));
+
+  mm.emit('第二段');
+  s.advance(20);
+  await tick();
+  check('上游第 2 次 onChunk → 按序追加（不是一次到齐）', col.text() === '第一段第二段', JSON.stringify(col.text()));
+
+  mm.emit('第三段');
+  s.advance(20);
+  await tick();
+  check('上游第 3 次 onChunk → 按序追加', col.text() === '第一段第二段第三段', JSON.stringify(col.text()));
+  check('3 次 onChunk 对应 ≥3 次 flush（真流式，非批量到齐）', col.ofType('token').length >= 3, String(col.ofType('token').length));
+
+  mm.end();
+  s.advance(200);
+  await tick();
+  check('收尾后恰好一个 done', col.ofType('done').length === 1 && col.terminal().length === 1, String(col.terminal().length));
+}
+
+{
+  // ② 上游中途 onError → 恰好一个 error 终态
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  runtime.startRun({ sessionId: 'n2', input: 'ping' });
+  await tick();
+  mm.emit('半句');
+  s.advance(20);
+  await tick();
+  mm.error('上游 500');
+  s.advance(200);
+  await tick();
+  const terms = col.terminal();
+  check('中途报错 → 恰好一个终态', terms.length === 1, String(terms.length));
+  check('终态是 error/UPSTREAM（不是 ABORTED —— 别把"服务器 500"显示成"你取消了"）', terms[0]?.type === 'error' && terms[0]?.code === 'UPSTREAM', `${terms[0]?.type}/${terms[0]?.code}`);
+}
+
+{
+  // ③ 上游静默断流（既无 onEnd 也无 onError）→ 兜底守卫仍收尾（否则 UI 永远转圈）
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  runtime.startRun({ sessionId: 'n3', input: 'ping' });
+  await tick();
+  mm.emit('开头');
+  s.advance(STALL_GUARD_DEFAULTS.timeoutMs + 5000);
+  await tick();
+  const terms = col.terminal();
+  check('静默断流仍收尾（1 个终态）', terms.length === 1, String(terms.length));
+  check('断流终态是 error/UPSTREAM 且带可读消息', terms[0]?.type === 'error' && terms[0]?.code === 'UPSTREAM' && String(terms[0]?.message).length > 0, JSON.stringify(terms[0]));
+  s.advance(5000);
+  await tick();
+  check('断流收尾后守卫被摘掉（无残留定时器）', s.pending() === 0, String(s.pending()));
+}
+
+{
+  // ④ abort 必须真的调上游 cancel（连接要断；"设个标志位"不算）
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  const { runId } = runtime.startRun({ sessionId: 'n4', input: 'ping' });
+  await tick();
+  mm.emit('一');
+  s.advance(20);
+  await tick();
+  runtime.abort(runId);
+  await tick();
+  check('abort 真的调了上游 cancel（计数探针）', mm.cancelCalls >= 1, String(mm.cancelCalls));
+  check('abort 后恰好一个 ABORTED 终态', col.terminal().length === 1 && col.terminal()[0].code === 'ABORTED', JSON.stringify(col.terminal()));
+}
+
+{
+  // ⑤ onError 之后再触发兜底守卫 → 仍只一个终态（打 #settle 的重复终结保护）
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  runtime.startRun({ sessionId: 'n5', input: 'ping' });
+  await tick();
+  mm.emit('半句');
+  mm.error('上游 500');
+  await tick();
+  s.advance(STALL_GUARD_DEFAULTS.timeoutMs + 5000); // 守卫本会在此窗口内触发
+  await tick();
+  check('onError 之后守卫再触发，仍只一个终态', col.terminal().length === 1, String(col.terminal().length));
+  check('重复收尾被挡下（droppedAfterTerminal = 0）', runtime.droppedAfterTerminal === 0, String(runtime.droppedAfterTerminal));
+}
+
+{
+  // ⑥ 上游"思考停顿"（长于检查间隔、短于超时）→ 守卫**不能**误杀
+  //    —— 这条让"看超时"这一步变成有鉴别力的：去掉超时判断（一静默就收尾）它会挂。
+  const s = createFakeScheduler();
+  const mm = new ManualModel();
+  const runtime = new AgentRuntime({ deps: s.deps, model: mm });
+  const col = makeCollector(runtime);
+  runtime.startRun({ sessionId: 'n6', input: 'ping' });
+  await tick();
+  mm.emit('前半');
+  s.advance(STALL_GUARD_DEFAULTS.checkIntervalMs * 3); // 静默 3s：> check，远 < timeout
+  await tick();
+  check('上游停顿未超时 → 没被守卫误杀（守卫不是"一静默就收尾"）', col.terminal().length === 0, String(col.terminal().length));
+  mm.emit('后半');
+  mm.end();
+  s.advance(200);
+  await tick();
+  check('停顿后继续吐字 → 正常 done', col.ofType('done').length === 1, String(col.ofType('done').length));
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -3,9 +3,29 @@ import { StreamBus } from '../events/streamBus.js';
 import { errorMessage } from '../errorMessage.js';
 import { BACKPRESSURE_DEFAULTS, BackpressurePump } from './backpressure.js';
 import type { BackpressureConfig, DrainingSummary } from './backpressure.js';
-import type { AgentDeps } from './deps.js';
-import type { ModelPort, ModelReply, ModelToolCall } from './model.js';
+import type { AgentDeps, Cancel } from './deps.js';
+import type { ModelPort, ModelToolCall } from './model.js';
 import { ToolRegistry, echoTool } from './tools.js';
+
+/**
+ * 断流兜底守卫的默认参数（**运行时半边**；另一半在壳的 HTTP 实现里，见计划 T6-b）。
+ *
+ * 上游既没说结束也没报错就断了 → 仍必须收尾出一个终态，
+ * 否则失败模式是"token 全到齐、UI 永远转圈"。
+ *
+ * ⚠️ 只有一半兜不住全部：`stream()` 是**同步返回**的，上游不发回调它也不会"抛" ——
+ * runtime 只能靠"多久没动静"来猜。真正的断流信号在壳那一半
+ * （HTTP 实现要在关流 / 首帧超时时主动调 `sink.onError`）。两半都要有。
+ *
+ * 超时取 60s 是**刻意保守**：这是粗粒度后备，宁可晚发现，也不要误杀
+ * 上游正常的"思考停顿"（工具调用期间可能长时间没有 onChunk）。
+ */
+export const STALL_GUARD_DEFAULTS = {
+  /** 多久查一次"还有没有进展"（用注入的 `every`，不许 setTimeout） */
+  checkIntervalMs: 1000,
+  /** 连续多久无 `onChunk` / `onToolCall` 视为断流，兜底收尾 */
+  timeoutMs: 60_000,
+} as const;
 
 /**
  * Agent 运行时 —— 一次 run 的完整生命周期。
@@ -46,6 +66,10 @@ interface ActiveRun {
   aborted: boolean;
   /** 已经发过终态事件 —— 之后任何事件都必须被丢弃并计数 */
   settled: boolean;
+  /** 上游取消函数（`model.stream()` 同步返回的那个）—— abort 时真的调它 */
+  cancel: Cancel | null;
+  /** 断流兜底守卫的摘除函数 —— 收尾时必须调，否则会留下一个永不停的定时器 */
+  guard: Cancel | null;
 }
 
 export class AgentRuntime {
@@ -90,6 +114,8 @@ export class AgentRuntime {
       pump: null,
       aborted: false,
       settled: false,
+      cancel: null,
+      guard: null,
     };
     this.#runs.set(runId, run);
 
@@ -132,6 +158,9 @@ export class AgentRuntime {
     const run = this.#runs.get(runId);
     if (run === undefined || run.settled) return false;
     run.aborted = true;
+    // 断上游（真的断连接）由 `#settle` 这个**单一出口**统一做 ——
+    // 所有终态路径都必须释放上游，兜底守卫那条尤其重要：
+    // 它是在"上游还挂着"的情况下强行收尾的，不 cancel 就把连接晾在那儿了。
     this.#settle(run, { type: 'error', runId, code: 'ABORTED', message: '已被用户中断' });
     return true;
   }
@@ -143,7 +172,13 @@ export class AgentRuntime {
    * 往一个已经关掉的 webContents 发事件只会浪费一次序列化。
    */
   stopAll(): void {
-    for (const run of this.#runs.values()) run.pump?.stop();
+    for (const run of this.#runs.values()) {
+      // 三样都要摘：上游（定时器 / HTTP 连接）、泵、断流守卫。
+      // 少摘上游就会留下一个永不停的定时器 —— 这正是本方法存在的意义（"避免调度泄漏"）。
+      run.cancel?.();
+      run.pump?.stop();
+      run.guard?.();
+    }
     this.#runs.clear();
   }
 
@@ -180,9 +215,63 @@ export class AgentRuntime {
     run.pump = pump;
     pump.start();
 
-    let reply: ModelReply | null = null;
+    // 上游是否已经"表过态"（说过 onEnd 或报过 onError）。
+    let ended = false;
+    // 最近一次"有进展"（onChunk / onToolCall）的时刻 —— 断流守卫的判据。
+    let lastProgressAt = this.#deps.now();
+
     try {
-      reply = await this.#model.complete({ sessionId: run.sessionId, prompt: run.input });
+      run.cancel = this.#model.stream(
+        { sessionId: run.sessionId, prompt: run.input },
+        {
+          onChunk: (text: string) => {
+            lastProgressAt = this.#deps.now();
+            pump.push(text);
+          },
+          // 工具调用时机由**上游**决定，而不是"整段回答回来之后"。
+          onToolCall: (call: ModelToolCall) => {
+            lastProgressAt = this.#deps.now();
+            void this.#runTool(run, call);
+          },
+          onEnd: () => {
+            ended = true;
+            pump.closeUpstream();
+          },
+          onError: (message: string) => {
+            ended = true;
+            // 上游报错 ≠ 用户中断，不能用 ABORTED ——
+            // 那会让 UI 把"服务器 500"显示成"你取消了"。
+            this.#settle(run, { type: 'error', runId: run.runId, code: 'UPSTREAM', message });
+          },
+        },
+      );
+
+      // ── 断流兜底守卫（**运行时半边**；壳那半由 HTTP 实现在关流/首帧超时时调 onError）──
+      // 判据：既没 onEnd 也没 onError，且 onChunk / onToolCall 也停了 → 主动收尾。
+      // ⚠️ 极性要害：是"**还没**表态"才兜底。
+      //    写成 `if (!ended) return` 就是把判据反了过来 ——
+      //    变成"正常结束之后"才触发，去和 drained 抢终态（把 done 压成 error ABORTED
+      //    并丢掉队列里最后一段），而真正该管的静默断流一个都兜不到（UI 永远转圈）。
+      const guard = STALL_GUARD_DEFAULTS;
+      run.guard = this.#deps.every(guard.checkIntervalMs, () => {
+        if (ended || run.settled) return;
+        if (this.#deps.now() - lastProgressAt < guard.timeoutMs) return;
+        this.#settle(run, {
+          type: 'error',
+          runId: run.runId,
+          code: 'UPSTREAM',
+          message: `上游 ${guard.timeoutMs}ms 无任何数据（疑似断流）`,
+        });
+      });
+
+      // 上游可能在 `stream()` 里就**同步**调了 onError（例如"参数校验失败立刻报错"）。
+      // 那种情况下上面的 `#settle` 已经跑完了，而守卫是**后**注册的 —— 它错过了
+      // `#settle` 里的那次摘除，会变成一个永不停的定时器（不崩不报错，只是泄漏）。
+      // 所以注册完必须自查一次。
+      if (run.settled) {
+        run.guard();
+        run.guard = null;
+      }
     } catch (err) {
       // 上游挂了是**一次 run 的失败**，不是进程的失败 ——
       // 必须走 error 事件让 UI 显性化，而不是让这个 Promise 静默 rejection。
@@ -196,19 +285,6 @@ export class AgentRuntime {
       }
       return;
     }
-
-    if (reply === null || run.aborted || run.settled) return;
-
-    // 工具在前、正文在后 —— 模型的"先干活再回答"。
-    for (const call of reply.toolCalls ?? []) {
-      await this.#runTool(run, call);
-      if (run.aborted || run.settled) return;
-    }
-
-    if (reply.text.length > 0) pump.push(reply.text);
-    // 顺序不能反：先 closeUpstream 再 push 的话，下一次搬运就会看到
-    // "上游已关 + 队列空"而提前收尾，最后这段正文会被丢掉。
-    pump.closeUpstream();
   }
 
   async #runTool(run: ActiveRun, call: ModelToolCall): Promise<void> {
@@ -241,7 +317,15 @@ export class AgentRuntime {
   #settle(run: ActiveRun, terminal: TerminalEvent): boolean {
     if (run.settled) return false;
     run.settled = true;
+    // 一个 run 走到终态时，"三样调度"都必须收干净，一个都不能漏：
+    //   ① 上游（HTTP 连接 / 它的定时器）—— 最容易漏，兜底守卫那条路径尤其明显
+    //   ② 背压泵（produce / flush 两个定时器）
+    //   ③ 断流守卫（deps.every 注册的检查循环）
+    // 漏掉任何一个都不崩不报错，只表现为"收尾后还在空转"，很难被发现。
+    run.cancel?.();
     run.pump?.stop();
+    run.guard?.();
+    run.guard = null;
     this.#runs.delete(run.runId);
     this.#bus.publish(terminal);
     return true;
