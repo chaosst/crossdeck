@@ -10,6 +10,8 @@
  *                  BackpressurePump（产字↔推字解耦、帧对齐、合并中间态）
  *   nav  — net/：SseParser（SSE 文本帧解析）
  *                navigate.ts（navigate 上游帧 → 语义动作映射）
+ *                navigateStream.ts（壳无关的流式会话状态机 + 诊断词汇）
+ *                chatClient.ts（ChatClient 端口 —— T8 第二次出现时上提）
  *          —— 上游只有一份解析与映射，三端共用；IO 才是一端一份。
  *
  * 铁律：本包**不得** import 任何平台 API（electron / node:* / @ohos.*）。
@@ -30,6 +32,8 @@ export * from './fs/pathGuard.js';
 export * from './fs/resolveInWorkspace.js';
 export * from './net/sse.js';
 export * from './net/navigate.js';
+export * from './net/navigateStream.js';
+export * from './net/chatClient.js';
 export * from './events/streamBus.js';
 export * from './agent/deps.js';
 export * from './agent/backpressure.js';
