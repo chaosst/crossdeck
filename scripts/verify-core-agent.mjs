@@ -50,6 +50,22 @@
  * （停顿未超时不被误杀）**才把它变成有鉴别力的 —— 断言不是越多越好，
  * 是要写到能区分"真错"与"没错"。
  *
+ * 轮3（103 条）—— 补了"不规则到达"一组，起因是**端到端自检先发现的真 bug**：
+ * | 变异                                              | 挂掉断言数 |
+ * |--------------------------------------------------|--------|
+ * | M6 产出游标固定加 `produceChunkSize`（而不是按实际取到的长度）      | 2      |
+ *
+ * 🔴 M6 不是"为了变异而变异"，它是**先有 bug、后有断言**：
+ *   端到端自检起了一个假 SSE 上游，正常场景发现"主进程攒了 23 字符、界面只有 15"。
+ *   根因就在 M6 那一行 —— 缓冲区某一拍不足一块时，固定推进游标会**跳过中间的字符**，
+ *   而且静默：`acceptedChars` 照样报全量（23），界面上那段答案"看着完整、其实缺字"
+ *   （`SELFCHECK-NAVIGATE-OK!!` → `SELFECK-VATE-!!`）。
+ *
+ *   为什么 100 条断言全绿也抓不到：脚本上游 12ms 产 3 字、泵 12ms 取 3 字，节奏**等长**，
+ *   缓冲区里永远恰好攒够一块。**只有到达节奏不规则时才现形** —— 而真上游正是不规则的。
+ *   教训：确定性时钟把时间变可控的同时，也会把"到达节奏"这件事一起抹平；
+ *   需要有一条**故意打乱节奏**的用例来补上这个盲区。
+ *
  * 另外记一笔踩过的坑：最初那条"派发中途退订自己"的断言**没有鉴别力** ——
  * V8 的 Set 迭代器删除当前元素时本来就不跳过后继，所以无论有没有快照都通过。
  * 真正有差别的是「退订还没轮到的别人」与「派发中途新增」。
@@ -435,6 +451,53 @@ console.log('\n── ② BackpressurePump：帧对齐 / 暂停 / 合并 / 收�
   s.advance(500);
   check('stop 之后不再推送', flushes.length === n);
   check('stop 是幂等的', (pump.stop(), pump.finished === true));
+}
+
+{
+  // 不规则到达：上游是"来一段喂一段"，某一拍缓冲区里**可能不足一块产出**。
+  //
+  // 这一条打的是游标算术：把游标固定推进 `produceChunkSize`（而不是按**实际取到的长度**）
+  // 会跳过中间的字符 —— 跳过是静默的，`acceptedChars` 照样报全量，
+  // 于是界面上的答案"看起来完整、其实缺字"，正是最该被拦下的那类错。
+  //
+  // 为什么以前那些断言抓不到：脚本上游 12ms 产 3 字、泵 12ms 取 3 字，节奏**等长**，
+  // 缓冲区里永远恰好攒够一块 —— 只有到达节奏不规则（真上游 / 假 SSE 上游）时才现形。
+  const s = createFakeScheduler();
+  const flushes = [];
+  let drainedWith = null;
+  const pump = new BackpressurePump(
+    {
+      flush: (t) => flushes.push(t),
+      drained: (x) => {
+        drainedWith = x;
+      },
+    },
+    s.deps,
+  );
+  pump.start();
+
+  const fed = ['SELF', 'CHECK-', 'NAV', 'IGATE-', 'OK!!'];
+  for (const piece of fed) {
+    pump.push(piece);
+    // 24ms = 两个产出周期：其中第二拍发生时缓冲区只有 4 个字符（不足一块）
+    s.advance(24);
+  }
+  pump.closeUpstream();
+  s.advance(1000);
+
+  check(
+    '不规则到达时也**一字不丢**（缓冲区不足一块不许跳字）',
+    flushes.join('') === fed.join(''),
+    `${JSON.stringify(flushes.join(''))} ≠ ${JSON.stringify(fed.join(''))}`,
+  );
+  check('不规则到达也照常收尾', drainedWith !== null);
+  check(
+    '入账口径与吐出的总量一致（"报全量、吐部分"必须能被抓住）',
+    drainedWith !== null && drainedWith.acceptedChars === flushes.join('').length,
+    drainedWith === null
+      ? 'null'
+      : `acceptedChars=${drainedWith.acceptedChars} 实际吐出=${flushes.join('').length}`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

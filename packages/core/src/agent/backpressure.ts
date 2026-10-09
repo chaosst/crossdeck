@@ -186,7 +186,15 @@ export class BackpressurePump {
       this.#incomingCursor,
       this.#incomingCursor + this.#cfg.produceChunkSize,
     );
-    this.#incomingCursor += this.#cfg.produceChunkSize;
+    // 🔴 游标必须按**实际取到的长度**推进，不能固定加 `produceChunkSize`。
+    //
+    // 上游是"来一段喂一段"，某一拍缓冲区里可能不足一块 —— 固定加会**跳过中间的字符**，
+    // 而且是静默的：`acceptedChars` 照样报全量，界面上那段答案"看着完整、其实缺字"。
+    // 实测：23 字符只吐出 15（`SELFCHECK-NAVIGATE-OK!!` → `SELFECK-VATE-!!`）。
+    //
+    // 为什么这个 bug 藏了很久：脚本上游 12ms 产 3 字、泵 12ms 取 3 字，节奏**等长**，
+    // 缓冲区里永远恰好攒够一块；只有到达节奏不规则（真上游 / 假 SSE 上游）时才现形。
+    this.#incomingCursor += next.length;
     this.#pending += next;
 
     if (this.#pending.length > this.#cfg.queueTextLimit) {
