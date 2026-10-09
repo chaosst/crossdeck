@@ -1,8 +1,11 @@
 import { webContents } from 'electron';
 import { IPC } from '@crossdeck/contract';
 import type { AgentStreamEvent } from '@crossdeck/contract';
-import type { AgentDeps } from '@crossdeck/core';
+import type { AgentDeps, ModelPort } from '@crossdeck/core';
 import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
+import { DEFAULT_FIRST_FRAME_TIMEOUT_MS, createNavigateClient } from './navigate/client.js';
+import { NavigateModel } from './navigate/model.js';
+import { navigateTokenStore } from './navigate/tokenStore.js';
 
 /**
  * 壳侧的 Agent 适配器。
@@ -10,13 +13,15 @@ import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
  * M4.5 之前，这个文件里躺着整个 Agent 运行时（产字定时器、帧 flush、队列合并、
  * 暂停语义、事件推送）—— 全是平台无关的逻辑，却只能靠"跑一遍端到端、等几秒、
  * 看 token 数对不对"来验证。搬到 core 之后，那套算法现在由
- * `scripts/verify-core-agent.mjs` 用假调度器在 0ms 内逐帧验完（83 条断言）。
+ * `scripts/verify-core-agent.mjs` 用假调度器在 0ms 内逐帧验完（100 条断言）。
  *
- * 剩下真正属于 Electron 的只有三件事：
+ * 剩下真正属于 Electron 的只有四件事：
  *   1. `setInterval` → core 要的 `every`
  *   2. `Date.now`    → core 要的 `now`
  *   3. `bus.subscribe` → `webContents.send` —— 把事件送到**发起它的那个窗口**
- * 三端壳的这三段几乎一样，这正是分层的收益。
+ *   4. **选上游**（T7）：有地址就接 navigate，没地址就退回脚本上游 ——
+ *      并把"当前是哪一个"如实暴露出去（`activeUpstream()`），不许假装在连真上游。
+ * 前三条三端壳几乎一样，这正是分层的收益；第 4 条是各端各自的选择。
  */
 
 // 提成变量：AgentRuntime 与 ScriptedModel **共用同一份 deps**。
@@ -32,10 +37,70 @@ const deps: AgentDeps = {
     `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
 };
 
-const runtime = new AgentRuntime({
-  deps,
-  model: new ScriptedModel({ deps }),
-});
+/**
+ * 上游地址 —— 没配就**退回脚本上游**。
+ *
+ * 为什么必须保留 `ScriptedModel` 这条分支：自检要能在**没有网络**时也跑通。
+ * 但"离线可跑"和"假装在连真上游"是两回事 —— 后者是诚实性缺口，
+ * 所以 `activeUpstream()` 会如实报出当前用的是哪一个（UI/自检据此标注）。
+ *
+ * ⚠️ **T7 的临时注入点**：读环境变量是权宜之计。T10 会把它换成
+ *    配置通道（`contract/src/ipc.ts` 的唯一事实源）+ guest 登录。
+ *    之所以现在也**不硬编码**：硬编码会让"连的是哪个上游"变成代码里的秘密 ——
+ *    同一个二进制在别人机器上连到哪儿，连日志都看不出来。
+ */
+function configuredUpstreamUrl(): string | null {
+  const raw = process.env['CROSSDECK_UPSTREAM_URL'];
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * 取当前 token。
+ *
+ * 优先 `tokenStore`（T10 的 guest 登录会往里写）；
+ * T7 阶段额外放行环境变量，好让"连真实 navigate 冒烟"在没有登录通道时也能做。
+ * 环境变量是**进程级**的、不落盘，比往 store 里塞一条假凭据干净。
+ */
+function currentToken(): string | null {
+  const stored = navigateTokenStore.get();
+  if (stored !== null && stored.length > 0) return stored;
+  const fromEnv = process.env['CROSSDECK_NAVIGATE_TOKEN'];
+  return fromEnv === undefined || fromEnv === '' ? null : fromEnv;
+}
+
+function createModel(upstream: string | null): ModelPort {
+  if (upstream === null) return new ScriptedModel({ deps });
+
+  return new NavigateModel({
+    deps,
+    client: createNavigateClient({
+      baseUrl: upstream,
+      getToken: currentToken,
+      firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+      deps,
+    }),
+  });
+}
+
+const upstream = configuredUpstreamUrl();
+const model = createModel(upstream);
+
+const runtime = new AgentRuntime({ deps, model });
+
+/** 当前上游的种类。**UI 与自检必须如实显示它** —— 不许"假装在连真上游"。 */
+export type UpstreamKind = 'scripted' | 'navigate';
+
+export function activeUpstream(): UpstreamKind {
+  return upstream === null ? 'scripted' : 'navigate';
+}
+
+console.log(
+  upstream === null
+    ? '[crossdeck] 上游：脚本上游（离线可跑；UI 需如实标注，别当成真上游）'
+    : `[crossdeck] 上游：navigate @ ${upstream}`,
+);
 
 /** runId → 发起它的窗口。事件要回到"自己那个窗口"，不能广播给所有人。 */
 const runWindows = new Map<string, number>();
