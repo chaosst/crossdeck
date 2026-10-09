@@ -2,8 +2,8 @@ import { webContents } from 'electron';
 import { IPC } from '@crossdeck/contract';
 import type { AgentStreamEvent } from '@crossdeck/contract';
 import type { AgentDeps, ModelPort } from '@crossdeck/core';
-import { AgentRuntime, ScriptedModel } from '@crossdeck/core';
-import { DEFAULT_FIRST_FRAME_TIMEOUT_MS, createNavigateClient } from './navigate/client.js';
+import { AgentRuntime, DEFAULT_FIRST_FRAME_TIMEOUT_MS, ScriptedModel } from '@crossdeck/core';
+import { createNavigateClient } from './navigate/client.js';
 import { NavigateModel } from './navigate/model.js';
 import { navigateTokenStore } from './navigate/tokenStore.js';
 

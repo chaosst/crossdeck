@@ -7,8 +7,7 @@
  * 而"哪一层负责收尾"会立刻变成说不清的问题（T6-a/T6-b 的教训都在这上面）。
  */
 
-import type { AgentDeps, Cancel, ModelPort, ModelRequest, ModelSink } from '@crossdeck/core';
-import type { ChatClient } from './client.js';
+import type { AgentDeps, Cancel, ChatClient, ModelPort, ModelRequest, ModelSink } from '@crossdeck/core';
 
 export interface NavigateModelOptions {
   readonly client: ChatClient;
