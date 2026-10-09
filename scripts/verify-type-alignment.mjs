@@ -211,6 +211,49 @@ export function __caseM() {
 `,
     expect: /percent/,
   },
+  {
+    id: 'N',
+    project: 'renderer',
+    what:
+      'GuestLoginResult 里**没有** token 字段 —— 渲染层哪怕"顺手读一下"都编译不过。' +
+      '凭据只活在主进程，这条约束的证据不是文档，是这个负例',
+    file: RENDERER_API,
+    append: `
+export async function __caseN() {
+  const r = await loginNavigateGuest();
+  return r.token;
+}
+`,
+    expect: /token/,
+  },
+  {
+    id: 'O',
+    project: 'renderer',
+    what:
+      'NavigateLoginStatus 同样没有 token —— 查询登录状态也不给渲染层抄近路的机会（与 N 是**两条不同的路**）',
+    file: RENDERER_API,
+    append: `
+export async function __caseO() {
+  const s = await getNavigateStatus();
+  return s.login.token;
+}
+`,
+    expect: /token/,
+  },
+  {
+    id: 'P',
+    project: 'renderer',
+    what:
+      'setNavigateUpstream 只收 `string | null`，收不了"顺便把 token 一起传上来"的扩展形状 —— ' +
+      '新增通道最容易在这里被悄悄撑开一个凭据入口',
+    file: RENDERER_API,
+    append: `
+export async function __caseP() {
+  return setNavigateUpstream('http://h:3001', 'LEAKED-TOKEN');
+}
+`,
+    expect: /Expected 1 arguments|2 arguments|arguments/i,
+  },
 ];
 
 /** 在进程内对指定项目做一次全量类型检查（连带检查 contract / core 源码）。 */

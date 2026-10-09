@@ -17,4 +17,5 @@ export * from './types.js';
 export * from './workspace.js';
 export * from './update.js';
 export * from './perf.js';
+export * from './navigate.js';
 export * from './error.js';

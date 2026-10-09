@@ -3,6 +3,7 @@ import type { DirEntry, FileStat, SessionMeta, SystemInfo } from './entities.js'
 import type { WindowKind } from './capability.js';
 import type { UpdateInfo } from './update.js';
 import type { PerfSampleInput, PerfSnapshot } from './perf.js';
+import type { GuestLoginResult, NavigateStatus } from './navigate.js';
 import type { Workspace } from './workspace.js';
 
 /**
@@ -34,6 +35,17 @@ export interface IpcInvokeMap {
   [IPC.fsWriteFile]: { req: { workspaceId: string; path: string; data: string }; res: void };
   [IPC.fsStat]: { req: { workspaceId: string; path: string }; res: FileStat };
   [IPC.agentControl]: { req: { runId: string; type: 'pause' | 'resume' }; res: void };
+
+  /**
+   * navigate 上游配置 + 登录。
+   *
+   * `navigateLoginGuest` 的 `res` 里**没有 token**（见 navigate.ts 文件头）——
+   * 凭据停在主进程，渲染层拿到的只有"能不能用、是谁、还剩多久"。
+   */
+  [IPC.navigateStatus]: { req: void; res: NavigateStatus };
+  [IPC.navigateSetUpstream]: { req: { upstreamUrl: string | null }; res: NavigateStatus };
+  [IPC.navigateLoginGuest]: { req: void; res: GuestLoginResult };
+  [IPC.navigateLogout]: { req: void; res: NavigateStatus };
 
   /**
    * 检查更新。**已是最新返回 null** —— 空结果的语义就是"没有可装的新版本"。

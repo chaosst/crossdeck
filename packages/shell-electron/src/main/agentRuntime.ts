@@ -1,10 +1,11 @@
 import { webContents } from 'electron';
 import { IPC } from '@crossdeck/contract';
-import type { AgentStreamEvent } from '@crossdeck/contract';
+import type { AgentStreamEvent, NavigateUpstreamStatus } from '@crossdeck/contract';
 import type { AgentDeps, ModelPort } from '@crossdeck/core';
 import { AgentRuntime, DEFAULT_FIRST_FRAME_TIMEOUT_MS, ScriptedModel } from '@crossdeck/core';
 import { createNavigateClient } from './navigate/client.js';
 import { NavigateModel } from './navigate/model.js';
+import { currentUpstreamUrl, upstreamStatus } from './navigate/session.js';
 import { navigateTokenStore } from './navigate/tokenStore.js';
 
 /**
@@ -27,58 +28,49 @@ const deps: AgentDeps = {
 };
 
 /**
- * 上游地址 —— 没配就**退回脚本上游**（自检要能在没有网络时也跑通）。
- * 但"离线可跑"和"假装在连真上游"是两回事，所以 `activeUpstream()` 会如实报出当前是哪个。
+ * 上游地址与凭据 —— 都**不是**构造时定死的。
  *
- * ⚠️ 读环境变量只是**临时注入点**，后续会换成配置通道 + guest 登录。
- *    现在也**不硬编码**：硬编码会让"连的是哪个上游"变成代码里的秘密。
+ * 登录 / 改地址都发生在运行期，所以这里注入一个"每次开跑现取"的模型：
+ * 上一版是模块加载时读环境变量定死一个模型，改了地址要重启才生效。
+ * 环境变量那两个注入点已随本卡删除（配置通道接手）。
+ *
+ * "离线可跑"和"假装在连真上游"仍是两回事：`activeUpstream()` 如实报出当前是哪个。
  */
-function configuredUpstreamUrl(): string | null {
-  const raw = process.env['CROSSDECK_UPSTREAM_URL'];
-  if (raw === undefined) return null;
-  const trimmed = raw.trim();
-  return trimmed === '' ? null : trimmed;
-}
+const scripted = new ScriptedModel({ deps });
 
-/** 取当前 token。优先 `tokenStore`；另放行环境变量（进程级、不落盘）以便冒烟。 */
-function currentToken(): string | null {
-  const stored = navigateTokenStore.get();
-  if (stored !== null && stored.length > 0) return stored;
-  const fromEnv = process.env['CROSSDECK_NAVIGATE_TOKEN'];
-  return fromEnv === undefined || fromEnv === '' ? null : fromEnv;
-}
+/** 按地址缓存 NavigateModel —— client 在构造时就拼好了 endpoint，换地址必须重建。 */
+let cachedNavigate: { url: string; model: ModelPort } | null = null;
 
-function createModel(upstream: string | null): ModelPort {
-  if (upstream === null) return new ScriptedModel({ deps });
+function navigateModelFor(url: string): ModelPort {
+  if (cachedNavigate?.url === url) return cachedNavigate.model;
 
-  return new NavigateModel({
+  const model = new NavigateModel({
     deps,
     client: createNavigateClient({
-      baseUrl: upstream,
-      getToken: currentToken,
+      baseUrl: url,
+      // 每次请求现取：登录可能在模型建好之后才发生。
+      getToken: () => navigateTokenStore.get(),
       firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
       deps,
     }),
   });
+  cachedNavigate = { url, model };
+  return model;
 }
 
-const upstream = configuredUpstreamUrl();
-const model = createModel(upstream);
+const model: ModelPort = {
+  stream(req, sink) {
+    const url = currentUpstreamUrl();
+    return url === null ? scripted.stream(req, sink) : navigateModelFor(url).stream(req, sink);
+  },
+};
 
 const runtime = new AgentRuntime({ deps, model });
 
-/** 当前上游的种类。**UI 与自检必须如实显示它** —— 不许"假装在连真上游"。 */
-export type UpstreamKind = 'scripted' | 'navigate';
-
-export function activeUpstream(): UpstreamKind {
-  return upstream === null ? 'scripted' : 'navigate';
+/** 当前上游。**UI 与自检必须如实显示它** —— 不许"假装在连真上游"。 */
+export function activeUpstream(): NavigateUpstreamStatus {
+  return upstreamStatus();
 }
-
-console.log(
-  upstream === null
-    ? '[crossdeck] 上游：脚本上游（离线可跑；UI 需如实标注，别当成真上游）'
-    : `[crossdeck] 上游：navigate @ ${upstream}`,
-);
 
 /** runId → 发起它的窗口。事件要回到"自己那个窗口"，不能广播给所有人。 */
 const runWindows = new Map<string, number>();

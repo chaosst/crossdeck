@@ -6,6 +6,8 @@ import type {
   Capability,
   DirEntry,
   FileStat,
+  GuestLoginResult,
+  NavigateStatus,
   PerfSnapshot,
   SessionMeta,
   SystemInfo,
@@ -15,6 +17,7 @@ import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } fro
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
+import { loginAsGuest, logout, navigateStatus, setUpstreamUrl } from './navigate/session.js';
 import { notePerfSample, readPerfSnapshot } from './perf.js';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
@@ -224,6 +227,21 @@ export function registerHandlers(): number {
   defineInvoke(IPC.updateDownload, async (): Promise<void> => downloadUpdate());
 
   defineInvoke(IPC.updateInstall, async (): Promise<void> => installUpdate());
+
+  // ── navigate 上游：配置 + 登录 ───────────────────────────
+  // 这四条是本壳**唯一**新增的通道（配置通道只能由壳提供：它要写 userData 目录）。
+  // 分工：handler 只做转发与翻译，规则在 core（状态码 → 话术）与 session.ts（用例编排）。
+  defineInvoke(IPC.navigateStatus, async (): Promise<NavigateStatus> => navigateStatus());
+
+  defineInvoke(IPC.navigateSetUpstream, async (req): Promise<NavigateStatus> =>
+    // 地址非法会抛 BAD_REQUEST —— 那是用户输入的错，不是上游的错，
+    // 所以不给"重试"入口（重试一万次还是同一个错地址）。
+    setUpstreamUrl(req.upstreamUrl),
+  );
+
+  defineInvoke(IPC.navigateLoginGuest, async (): Promise<GuestLoginResult> => loginAsGuest());
+
+  defineInvoke(IPC.navigateLogout, async (): Promise<NavigateStatus> => logout());
 
   // ── 性能采样（M6-1）──────────────────────────────────────
   // 一次调用两件事：把渲染层带上来的采样点记账，再返回当前快照。

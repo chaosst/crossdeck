@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { PERF_TARGETS, assertNever, formatBytes, meetsTarget } from '@crossdeck/contract';
+import { NAVIGATE_AUTH_DETAIL, PERF_TARGETS, assertNever, formatBytes, meetsTarget } from '@crossdeck/contract';
 import type {
   AgentStreamEvent,
   DirEntry,
+  GuestLoginResult,
+  NavigateStatus,
   PerfSnapshot,
   SessionMeta,
   SystemInfo,
@@ -19,17 +21,21 @@ import {
   deleteSession,
   describeIpcError,
   downloadUpdate,
+  getNavigateStatus,
   getSystemInfo,
   grantWorkspace,
   installUpdate,
   listDir,
   listSessions,
   listWorkspaces,
+  loginNavigateGuest,
+  logoutNavigate,
   onAgentEvent,
   onUpdateStatus,
   openWindow,
   readFileText,
   samplePerf,
+  setNavigateUpstream,
   startAgentRun,
   startStreamFpsProbe,
   stopStreamFpsProbe,
@@ -84,6 +90,14 @@ export default function App() {
 
   // ── M6-1：性能量化 ──
   const [perf, setPerf] = useState<PerfSnapshot | null>(null);
+
+  // ── T10：上游配置 + guest 登录 ──
+  const [navStatus, setNavStatus] = useState<NavigateStatus | null>(null);
+  /** 输入框是受控的，但**只在读回状态时**才覆盖它 —— 边打字边被状态刷新顶掉是最恼人的那种 bug。 */
+  const [navInput, setNavInput] = useState('');
+  const [navBusy, setNavBusy] = useState(false);
+  const [navError, setNavError] = useState<ReturnType<typeof describeIpcError> | null>(null);
+  const [navNotice, setNavNotice] = useState<string | null>(null);
 
   /**
    * 只有 available / downloading / ready 三种状态带 info。
@@ -309,6 +323,66 @@ export default function App() {
     }
   }, []);
 
+  // ── T10：上游配置 + guest 登录 ──────────────────────────
+  /**
+   * 把状态写进界面**并**同步输入框。
+   *
+   * 只有在"刚读回/刚写完状态"时才覆盖输入框 —— 否则用户打字打到一半，
+   * 任何一次状态刷新都会把他输入的内容顶掉。
+   */
+  const applyNavStatus = useCallback((s: NavigateStatus) => {
+    setNavStatus(s);
+    setNavInput(s.upstream.baseUrl ?? '');
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        applyNavStatus(await getNavigateStatus());
+      } catch (err) {
+        setNavError(describeIpcError(err));
+      }
+    })();
+  }, [applyNavStatus]);
+
+  /** 三条写操作共用一套 忙/错/提示 处理 —— 它们的失败形态与成功反馈是同一种东西。 */
+  const runNavAction = useCallback(
+    async (
+      run: () => Promise<NavigateStatus | GuestLoginResult>,
+      notice: (s: NavigateStatus) => string,
+    ) => {
+      setNavError(null);
+      setNavNotice(null);
+      setNavBusy(true);
+      try {
+        const result = await run();
+        // 三条写通道回的**就是写完后的状态**（少一次往返，也就少一个能读成旧值的窗口）；
+        // 登录回的是"你是谁"（凭据不回渲染层），所以只有它要补读一次状态。
+        const after: NavigateStatus = 'upstream' in result ? result : await getNavigateStatus();
+        applyNavStatus(after);
+        setNavNotice(notice(after));
+      } catch (err) {
+        setNavError(describeIpcError(err));
+      } finally {
+        setNavBusy(false);
+      }
+    },
+    [applyNavStatus],
+  );
+
+  const handleSaveUpstream = useCallback(() => {
+    // 空串 = 明确清空 → 退回脚本上游。这与"填了个错地址"是两件事，由 main 侧判定。
+    const raw = navInput.trim() === '' ? null : navInput;
+    return runNavAction(() => setNavigateUpstream(raw), () => '已保存上游地址');
+  }, [navInput, runNavAction]);
+
+  const handleLoginGuest = useCallback(
+    () => runNavAction(loginNavigateGuest, (s) => `已获取体验账号（role=${s.login.role ?? '未知'}）`),
+    [runNavAction],
+  );
+
+  const handleLogout = useCallback(() => runNavAction(logoutNavigate, (s) => s.login.note), [runNavAction]);
+
   const handleGrant = useCallback(async () => {
     setFsError(null);
     try {
@@ -435,6 +509,96 @@ export default function App() {
 
         {kind === 'main' && (
           <>
+            <Card
+              title="上游与登录 · 配置通道 + guest 登录"
+              action={
+                <div className="flex gap-2">
+                  <Button onClick={() => void handleSaveUpstream()} disabled={navBusy}>
+                    <span data-testid="nav-save">保存地址</span>
+                  </Button>
+                  <Button onClick={() => void handleLoginGuest()} disabled={navBusy}>
+                    <span data-testid="nav-login">获取体验账号</span>
+                  </Button>
+                  <Button onClick={() => void handleLogout()} disabled={navBusy || navStatus?.login.hasToken !== true}>
+                    <span data-testid="nav-logout">登出</span>
+                  </Button>
+                </div>
+              }
+            >
+              <p className="text-[12px] text-[#8a857c]">
+                这是本壳**唯一**新增的 IPC 通道（配置通道只能由壳提供 —— 它要写 userData 目录）。
+                凭据只落主进程（safeStorage 加密），响应类型里压根没有 token 字段，
+                所以下面这块界面**拿不到**它。地址留空 = 退回脚本上游（离线可跑）。
+              </p>
+
+              <input
+                value={navInput}
+                onChange={(e) => setNavInput(e.target.value)}
+                placeholder="http://127.0.0.1:3001（留空 = 脚本上游）"
+                data-testid="nav-upstream-input"
+                className="mt-2 w-full rounded border border-[#d9d5cb] bg-white px-2 py-1 font-mono text-[12px] text-[#33302b]"
+              />
+
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#8a857c]">
+                {/*
+                  data-* 是给自检用的：断言"界面如实报上游"不该去 parse 中文文案。
+                  （T12 的自检会对着它跑。）
+                */}
+                <span data-testid="navigate-upstream" data-kind={navStatus?.upstream.kind ?? 'unknown'}>
+                  上游：
+                  {navStatus === null
+                    ? '（尚未读取）'
+                    : navStatus.upstream.kind === 'navigate'
+                      ? `navigate ${navStatus.upstream.baseUrl ?? ''}`
+                      : '脚本（离线可跑，**不是**真上游）'}
+                </span>
+                <span
+                  data-testid="navigate-login-state"
+                  data-has-token={String(navStatus?.login.hasToken ?? false)}
+                  data-role={navStatus?.login.role ?? ''}
+                >
+                  登录：
+                  {navStatus === null
+                    ? '（尚未读取）'
+                    : navStatus.login.hasToken
+                      ? `已持有凭据（role=${navStatus.login.role ?? '未知'}${
+                          navStatus.login.expiresAt === null
+                            ? ''
+                            : ` · 到期 ${new Date(navStatus.login.expiresAt).toLocaleTimeString()}`
+                        }）`
+                      : '未登录'}
+                </span>
+              </div>
+
+              {navStatus !== null && (
+                <p className="mt-1 text-[11px] text-[#a09a90]">{navStatus.login.note}</p>
+              )}
+
+              {navNotice !== null && (
+                <p className="mt-1 text-[12px] text-[#1f6b3a]" data-testid="navigate-notice">
+                  {navNotice}
+                </p>
+              )}
+
+              {/*
+                错误**连同下一步一起**显示：503（服务端没配体验账号）与 429（限流）
+                是两条动作完全不同的路，把它们都渲染成"登录失败，请重试"等于没说。
+                code / detail 也落在 data-* 上，自检据此断言"两者确实能分开"。
+                404 / 400 这类是**用户填错了地址**，更不该出现"重试"按钮。
+              */}
+              {navError !== null && (
+                <pre
+                  data-testid="navigate-error"
+                  data-code={navError.code}
+                  data-detail={navError.detail ?? ''}
+                  className="mt-2 whitespace-pre-wrap rounded border border-[#e8c9c9] bg-[#fdf6f6] p-3 font-mono text-[11px] leading-relaxed text-[#a12626]"
+                >
+                  {navError.text}
+                  {'\n'}下一步：{navNextStep(navError.code, navError.detail)}
+                </pre>
+              )}
+            </Card>
+
             <Card
               title="会话"
               action={
@@ -843,6 +1007,33 @@ function perfRows(
     });
   }
   return rows;
+}
+
+/**
+ * 失败的**下一步**。
+ *
+ * 这张表就是"为什么 503 与 429 必须能区分"的答案：两条路的下一步完全不同 ——
+ * 一个要去找部署方配置，一个只要等一会儿。压成一句"登录失败，请重试"
+ * 会把前者变成一个永远重试不成功的按钮。
+ *
+ * 分支用 `NAVIGATE_AUTH_DETAIL` 的常量而不是字面量：那是唯一事实源，
+ * 写错在编译期就会报错。
+ */
+function navNextStep(code: string, detail: string | undefined): string {
+  switch (detail) {
+    case NAVIGATE_AUTH_DETAIL.guestDisabled:
+      return '重试不会解决 —— 要让部署方配一个 role=guest 的账号。';
+    case NAVIGATE_AUTH_DETAIL.rateLimited:
+      return '等一会儿再点一次（上游已给出建议秒数）。';
+    case NAVIGATE_AUTH_DETAIL.authRejected:
+      return '这份凭据已被吊销 —— 重新获取体验账号。';
+    default:
+      break;
+  }
+  if (code === 'BAD_REQUEST') return '改地址，不要重试（重试一万次还是同一个错地址）。';
+  if (code === 'UNSUPPORTED') return '这条路在当前部署上不存在 —— 需要部署方开启。';
+  if (code === 'UPSTREAM') return '上游不可达 —— 检查地址与网络，稍后可重试。';
+  return '看上面的原文。';
 }
 
 function updateLine(s: UpdateStatus | null): string {

@@ -9,7 +9,7 @@ import {
 } from './appProtocol.js';
 import { createWindow, setDevServerUrl } from './windows.js';
 import { registerHandlers, registeredChannelList, grantWorkspaceForSelfCheck } from './handlers.js';
-import { stopAllRuns } from './agentRuntime.js';
+import { activeUpstream, stopAllRuns } from './agentRuntime.js';
 import { startDevServer } from './devServer.js';
 import { prepareScopeFixture, runSelfCheck } from './selfcheck.js';
 import { runUpdateFeedProbe } from './updateProbe.js';
@@ -91,6 +91,15 @@ app.whenReady().then(async () => {
 
     const channelCount = registerHandlers();
     console.log(`[crossdeck] 已注册 IPC 通道 ${channelCount} 个：${registeredChannelList().join(', ')}`);
+
+    // 上游现在存在配置里（随用户改），所以这条日志只能在 ready 之后打 ——
+    // 模块加载时读它就得碰 userData 路径，那时 app 还没 ready。
+    const upstream = activeUpstream();
+    console.log(
+      upstream.kind === 'navigate'
+        ? `[crossdeck] 上游：navigate @ ${upstream.baseUrl}`
+        : '[crossdeck] 上游：脚本上游（离线可跑；UI 需如实标注，别当成真上游）',
+    );
 
     const selfcheckOutDir = join(PKG_ROOT, 'dist', 'selfcheck');
 

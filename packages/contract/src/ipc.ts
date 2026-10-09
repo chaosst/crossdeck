@@ -58,6 +58,18 @@ export const IPC = {
    */
   updateStatus: 'update:status',
 
+  // ── navigate 上游：配置 + 登录 ──────────────────────────
+  /**
+   * 读当前上游与登录态。三条写通道的响应也是它 —— 写完立刻回一份新状态，
+   * 免得调用方"改完再查一次"，那中间有个能把状态读成旧值的窗口。
+   */
+  navigateStatus: 'navigate:status',
+  /** 设置上游地址。`null` = 清空，退回脚本上游（自检要能离线跑）。 */
+  navigateSetUpstream: 'navigate:set-upstream',
+  /** **guest 登录**（免密）。凭据只落主进程，响应里没有 token。 */
+  navigateLoginGuest: 'navigate:login-guest',
+  navigateLogout: 'navigate:logout',
+
   // ── 性能采样 ────────────────────────────────────────────
   /**
    * 读写合一：调用即返回当前快照，同时把入参里的采样点记账。

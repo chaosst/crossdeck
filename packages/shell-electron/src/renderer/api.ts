@@ -2,7 +2,9 @@ import { IPC, parseIpcError } from '@crossdeck/contract';
 import type {
   AgentStreamEvent,
   DirEntry,
+  GuestLoginResult,
   IpcErrorCode,
+  NavigateStatus,
   PerfSampleInput,
   PerfSnapshot,
   SessionMeta,
@@ -112,6 +114,27 @@ export async function readFileText(
 
 export async function controlAgentRun(runId: string, type: 'pause' | 'resume'): Promise<void> {
   return window.bridge.invoke(IPC.agentControl, { runId, type });
+}
+
+// ── navigate：上游配置 + 登录 ────────────────────────────────
+// 这四条**没有任何让 token 进出的余地**：凭据停在主进程，
+// 响应类型（contract 的 GuestLoginResult / NavigateLoginStatus）里压根没有这个字段。
+// 负例 N 断言的正是"在渲染层写 res.token 必须编译失败"。
+
+export async function getNavigateStatus(): Promise<NavigateStatus> {
+  return window.bridge.invoke(IPC.navigateStatus);
+}
+
+export async function setNavigateUpstream(upstreamUrl: string | null): Promise<NavigateStatus> {
+  return window.bridge.invoke(IPC.navigateSetUpstream, { upstreamUrl });
+}
+
+export async function loginNavigateGuest(): Promise<GuestLoginResult> {
+  return window.bridge.invoke(IPC.navigateLoginGuest);
+}
+
+export async function logoutNavigate(): Promise<NavigateStatus> {
+  return window.bridge.invoke(IPC.navigateLogout);
 }
 
 /**

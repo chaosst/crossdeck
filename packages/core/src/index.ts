@@ -26,6 +26,7 @@ export * from './fs/resolveInWorkspace.js';
 export * from './net/sse.js';
 export * from './net/navigate.js';
 export * from './net/navigateStream.js';
+export * from './net/navigateAuth.js';
 export * from './net/chatClient.js';
 export * from './events/streamBus.js';
 export * from './agent/deps.js';
