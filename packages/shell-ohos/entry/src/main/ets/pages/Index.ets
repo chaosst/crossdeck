@@ -1,17 +1,17 @@
 /**
- * crossdeck · HarmonyOS 壳（单窗口）
+ * crossdeck · HarmonyOS 壳（单窗口）。
  *
- * 这个页面要说清一件事：**同一份 contract/core，换一个壳**。
- * `../shared/contract` 与 `../shared/core` 是从 `packages/` 同步过来的**只读副本**
- * （由 scripts/sync-shared.mjs 搬运），一份源都没有重写。
+ * 要说的是一件事：**同一份 contract/core，换一个壳**。
+ * `../shared/contract` 与 `../shared/core` 是从 `packages/` 同步过来的**只读副本**。
  *
- * 与 Electron 壳的差别（刻意保留，不做假装统一的抽象）：
- *   1. **没有 IPC**。同一进程内，`agent:stream` 那条单向通道整个消失 ——
- *      `bus.subscribe` 直接写 @State，跨进程才需要那条通道。
- *   2. **没有 preload / 错误信封**。contextBridge 丢自定义属性那件事在这里不存在。
- *   3. 能力表短一截（见 shared/ports.ets 的对照表），UI 据此少渲染。
+ * 与 Electron 壳的差别（刻意保留，不做假装统一的抽象）：没有 IPC（同进程直接订阅）、
+ * 没有 preload / 错误信封、能力表短一截（见 shared/ports.ets），UI 据此少渲染。
  */
-import { SessionStore, AgentRuntime, ScriptedModel, TOOL_SCENARIO_MARKER } from '../shared/core/index';
+import { SessionStore, AgentRuntime, ScriptedModel, TOOL_SCENARIO_MARKER,
+  DEFAULT_FIRST_FRAME_TIMEOUT_MS } from '../shared/core/index';
+import type { AgentDeps, ModelPort } from '../shared/core/index';
+import { createOhosNavigateClient } from '../navigate/NavigateClient';
+import { OhosNavigateModel } from '../navigate/NavigateModel';
 // ⚠️ 这三者在 contract 里，不在 core —— core 对 contract 只 `import type` 自用，
 //    并不再导出（那是"零运行时依赖"这条约定的另一面）。
 import type { AgentStreamEvent, SessionMeta, Usage } from '../shared/contract/index';
@@ -19,9 +19,9 @@ import { ALL_CAPABILITIES, capabilityNote, detectCapabilities, deviceKind } from
 import type { Capability } from '../shared/contract/capability';
 import { runSpikeReport } from '../shared/probe/spikeReport';
 import type { SpikeResult } from '../shared/probe/spikeReport';
-// T1 spike：端口形状对照（回调式 vs 异步可迭代）—— 必须**真的调用**才有鉴别力
+// 端口形状对照 spike（回调式 vs 异步可迭代）—— 必须**真的调用**才有鉴别力
 import { runCallbackProbe, runAsyncProbe } from '../shared/probe/portShape';
-// T2 spike：模拟器 → 宿主机的可达性（结果同时写 hilog，前缀 [NETPROBE]）
+// 模拟器 → 宿主机可达性 spike（结果同时写 hilog，前缀 [NETPROBE]）
 import { runNetProbe } from '../shared/probe/netProbe';
 import type { NetProbeResult } from '../shared/probe/netProbe';
 
@@ -29,6 +29,32 @@ const CARD = '#171A21';
 const TEXT = '#E6E6E6';
 const DIM = '#9AA0A6';
 const ACCENT = '#9FE870';
+
+// ─────────────────────────────────────────────────────────────
+// 上游选择 —— 有地址就接 navigate，否则退回脚本上游。
+//
+// ⚠️ 鸿蒙没有 Android 的 `10.0.2.2`：模拟器里 `127.0.0.1` 指的是**它自己**。
+//    所以先 `hdc rport tcp:3001 tcp:3001` 把宿主机端口映射进来（实测走这条路）。
+//    地址留空 = 脚本上游，离线也能把界面跑起来。
+//    后续会把它换成配置通道，届时这里只留选择器。
+// ─────────────────────────────────────────────────────────────
+const OHOS_UPSTREAM_BASE = '';
+
+/** 凭据。当前不落盘；后续接 guest 登录 / `@ohos.data.preferences`。 */
+let ohosNavigateToken: string | null = null;
+
+function createModel(deps: AgentDeps): ModelPort {
+  if (OHOS_UPSTREAM_BASE.length === 0) return new ScriptedModel({ deps });
+  return new OhosNavigateModel({
+    deps,
+    client: createOhosNavigateClient({
+      baseUrl: OHOS_UPSTREAM_BASE,
+      getToken: (): string | null => ohosNavigateToken,
+      firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+      deps,
+    }),
+  });
+}
 
 function summarize(types: string[]): string {
   const parts: string[] = [];
@@ -70,13 +96,13 @@ struct Index {
     this.capabilities = detectCapabilities();
     this.spike = runSpikeReport();
 
-    // T1：两组端口形状各自真实调用一次（只 import 不调用 = 编译器可能不检查）
+    // 端口形状：两组各自真实调用一次（只 import 不调用 = 编译器可能不检查）
     const shapeA: string = runCallbackProbe('A组');
     runAsyncProbe('B组').then((shapeB: string): void => {
       this.portShape = `A(回调式)=${shapeA} ｜ B(async可迭代)=${shapeB}`;
     });
 
-    // T2：网络可达性（三种 URL 各打一次）—— 同一份结果也写进 hilog（前缀 [NETPROBE]）
+    // 网络可达性：三种 URL 各打一次—— 同一份结果也写进 hilog（前缀 [NETPROBE]）
     runNetProbe().then((rs: NetProbeResult[]): void => {
       const lines: string[] = [];
       for (const r of rs) {
@@ -85,19 +111,17 @@ struct Index {
       this.netProbe = lines.join('\n');
     });
 
-    const runtime = new AgentRuntime({
-      deps: {
-        now: (): number => Date.now(),
-        every: (intervalMs: number, fn: () => void): (() => void) => {
-          const timer: number = setInterval(fn, intervalMs);
-          return (): void => {
-            clearInterval(timer);
-          };
-        },
-        newId: (prefix: string): string => `${prefix}_${Math.floor(Math.random() * 1000000000).toString(36)}`,
+    const deps: AgentDeps = {
+      now: (): number => Date.now(),
+      every: (intervalMs: number, fn: () => void): (() => void) => {
+        const timer: number = setInterval(fn, intervalMs);
+        return (): void => {
+          clearInterval(timer);
+        };
       },
-      model: new ScriptedModel(),
-    });
+      newId: (prefix: string): string => `${prefix}_${Math.floor(Math.random() * 1000000000).toString(36)}`,
+    };
+    const runtime = new AgentRuntime({ deps, model: createModel(deps) });
     runtime.bus.subscribe((event: AgentStreamEvent): void => {
       this.onEvent(event);
     });
@@ -233,16 +257,16 @@ struct Index {
           }.width('100%')
         }, (r: SpikeResult) => r.layer)
 
-        // ⑤ T1 spike 证据：端口形状（回调式 vs 异步可迭代）
-        this.sectionTitle('⑤ T1 spike：端口形状，ArkTS 吃得下哪个')
+        // ⑤ 端口形状 spike 证据（回调式 vs 异步可迭代）
+        this.sectionTitle('⑤ 端口形状 spike：ArkTS 吃得下哪个')
         Text('A=回调式（sink 三回调 + 返回取消函数）｜ B=AsyncIterable + for await')
           .fontSize(11).fontColor(DIM)
         Text(this.portShape).fontSize(11).fontColor(ACCENT).width('100%')
         Text('两者都编译过 → 结论以编译器实测为准；本行能显示 = 运行时也真的跑通了。')
           .fontSize(10).fontColor(DIM)
 
-        // ⑥ T2 spike 证据：模拟器 → 宿主机可达性
-        this.sectionTitle('⑥ T2 spike：模拟器 → 宿主机 可达性')
+        // ⑥ 模拟器 → 宿主机可达性 spike 证据
+        this.sectionTitle('⑥ 模拟器 → 宿主机 可达性 spike')
         Text('宿主机 node 服务器 @ :3901（/ping → pong-from-host）')
           .fontSize(11).fontColor(DIM)
         Text(this.netProbe).fontSize(11).fontColor(TEXT).width('100%')

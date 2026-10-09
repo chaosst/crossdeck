@@ -87,11 +87,24 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * 把"根本没跑起来"和"跑了但失败"分开。
+ *
+ * 受限会话里 Node 派生子进程直接 `EBUSY`（`status=null`，`stdout`/`stderr`
+ * 全是 `undefined`）。不区分的话：① 后续 `stdout.trim()` 抛 `TypeError`，
+ * 报出来像脚本自己写错了；② 被测的 `hdc list targets` 会退化成"没有在线设备"，
+ * 把**环境问题**报成**设备问题** —— 正是"测量手段骗了你"那一类。
+ */
+function spawnFailure(r) {
+  return r.error ? `${r.error.code ?? 'spawn'}: ${r.error.message}` : null;
+}
+
 function hdc(args, opts = {}) {
   return spawnSync(HDC, args, { encoding: 'utf8', cwd: opts.cwd ?? REPO, maxBuffer: 32 * 1024 * 1024 });
 }
 
 console.log('── 鸿蒙壳端到端验证 ────────────────────────────');
+mkdirSync(EVIDENCE, { recursive: true });
 
 // ① 工具链
 if (!existsSync(HVIGOR) || !existsSync(HDC)) {
@@ -104,7 +117,16 @@ if (!existsSync(HVIGOR) || !existsSync(HDC)) {
 record('工具链', true, `DevEco @ ${DEVECO}`);
 
 // ② 设备
-const targets = hdc(['list', 'targets']).stdout.trim();
+const probe = hdc(['list', 'targets']);
+const probeFail = spawnFailure(probe);
+if (probeFail !== null) {
+  console.error(`❌ 无法执行 hdc：${probeFail}`);
+  console.error('   Node 在本会话派生子进程会 EBUSY —— 换普通终端跑（不要套沙箱），这不是设备的问题。');
+  evidence.skipped = 'spawn-blocked';
+  writeFileSync(join(EVIDENCE, 'ohos-selfcheck.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+  process.exit(2);
+}
+const targets = probe.stdout.trim();
 if (targets.length === 0 || targets.includes('[Empty]')) {
   console.error('❌ 没有在线设备 —— 先启动模拟器：');
   console.error(`   "${DEVECO}/tools/emulator/Emulator.exe" -start "Pura 90 Pro" \\`);
@@ -119,15 +141,16 @@ record('设备在线', true, `${device}（${hdc(['shell', 'uname -m']).stdout.tr
 // ③ 同步 contract/core
 const sync = run('node', [join(HERE, 'sync-shared.mjs')]);
 if (sync.status !== 0) {
-  record('同步 contract/core', false, sync.stderr?.slice(-300) ?? 'unknown');
+  record('同步 contract/core', false, sync.stderr?.slice(-300) ?? spawnFailure(sync) ?? 'unknown');
   process.exit(1);
 }
 record('同步 contract/core', true, sync.stdout.trim().split('\n').slice(-1)[0] ?? '');
 
 // ④ 编译
 const build = run(HVIGOR, ['assembleHap', '--no-daemon'], { shell: true });
-const buildOk = build.status === 0 && (build.stdout ?? '').includes('BUILD SUCCESSFUL');
-record('hvigorw assembleHap', buildOk, buildOk ? 'BUILD SUCCESSFUL' : (build.stdout ?? build.stderr ?? '').slice(-400));
+const buildFail = spawnFailure(build);
+const buildOk = buildFail === null && build.status === 0 && (build.stdout ?? '').includes('BUILD SUCCESSFUL');
+record('hvigorw assembleHap', buildOk, buildOk ? 'BUILD SUCCESSFUL' : (buildFail ?? (build.stdout ?? build.stderr ?? '')).slice(-400));
 
 const hap = join(PKG, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-unsigned.hap');
 if (!buildOk || !existsSync(hap)) {
