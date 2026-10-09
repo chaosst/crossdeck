@@ -24,77 +24,40 @@
  *
  * 换句话说：这个脚本是「一套 core 多端壳」在鸿蒙端的**接缝**，
  * 接缝必须是显式的、可复现的 —— 而不是手工复制出一份会悄悄腐烂的副本。
+ *
+ * ## 本文件只负责「写盘 + 打印」
+ *
+ * 「该写什么」的计算在 `syncShared.mjs` 的 `planSync()`，与漂移检测脚本
+ * （仓库根 `scripts/verify-shared-fresh.mjs`）**共用同一份** —— 那两处若各算一遍，
+ * 检测用的尺子自己就会腐烂。详见 syncShared.mjs 头部。
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PKG = join(HERE, '..');
-const REPO = join(PKG, '..', '..');
-const SHARED = join(PKG, 'entry', 'src', 'main', 'ets', 'shared');
-
-const CONTRACT_SRC = join(REPO, 'packages', 'contract', 'src');
-const CORE_SRC = join(REPO, 'packages', 'core', 'src');
-
-/** 递归收集所有 .ts 文件（core 有子目录）。 */
-function collectTs(dir) {
-  const out = [];
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) out.push(...collectTs(full));
-    else if (name.endsWith('.ts')) out.push(full);
-  }
-  return out;
-}
-
-/**
- * 把裸包名改写成相对路径。
- *
- * `from '@crossdeck/contract'` 出现在 core 的每个文件里（且一律是 `import type`，
- * 与 core 「对 contract 零运行时依赖」的约定一致）。
- * 目标深度按当前文件在 shared/ 下的层级算：
- *   shared/core/index.ts        → ../contract/index
- *   shared/core/agent/runtime.ts → ../../contract/index
- *
- * 显式补 `/index`：ArkTS 的模块解析不认目录（不会自动找 index）。
- */
-function rewriteSpecifiers(source, relDepth) {
-  const specifier = `${'../'.repeat(relDepth)}contract/index`;
-  return source.replace(/(from\s+')(@crossdeck\/contract)(')/g, `$1${specifier}$3`);
-}
-
-function syncDir(srcDir, destDir, label) {
-  const files = collectTs(srcDir);
-  rmSync(destDir, { recursive: true, force: true });
-  mkdirSync(destDir, { recursive: true });
-
-  let rewritten = 0;
-  for (const file of files) {
-    const rel = relative(srcDir, file);
-    const dest = join(destDir, rel);
-    mkdirSync(dirname(dest), { recursive: true });
-
-    const original = readFileSync(file, 'utf8');
-    // 从 destDir 出发，回到 shared/ 需要几层
-    const depthFromShared = relative(SHARED, dirname(dest)).split(sep).length;
-    const next = rewriteSpecifiers(original, depthFromShared);
-    if (next !== original) rewritten += 1;
-    writeFileSync(dest, next, 'utf8');
-  }
-  console.log(`  ${label.padEnd(9)} ${String(files.length).padStart(2)} 个文件 → ${relative(PKG, destDir)}`);
-  return { files: files.length, rewritten };
-}
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, relative } from 'node:path';
+import { PKG_DIR, planSync } from './syncShared.mjs';
 
 console.log('── 同步 contract/core 进鸿蒙工程 ──────────────');
-if (!existsSync(CONTRACT_SRC) || !existsSync(CORE_SRC)) {
-  console.error(`找不到源目录：${CONTRACT_SRC} / ${CORE_SRC}`);
+
+let plan;
+try {
+  plan = planSync();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
 
-const c = syncDir(CONTRACT_SRC, join(SHARED, 'contract'), 'contract');
-const k = syncDir(CORE_SRC, join(SHARED, 'core'), 'core');
+for (const target of plan) {
+  // 产物目录整体重建：既避免删文件后留下孤儿，也顺带清掉手工塞进去的文件。
+  rmSync(target.destDir, { recursive: true, force: true });
+  mkdirSync(target.destDir, { recursive: true });
+  for (const file of target.files) {
+    mkdirSync(dirname(file.dest), { recursive: true });
+    writeFileSync(file.dest, file.content, 'utf8');
+  }
+  console.log(
+    `  ${target.label.padEnd(9)} ${String(target.files.length).padStart(2)} 个文件 → ${relative(PKG_DIR, target.destDir)}`,
+  );
+}
 
-console.log(`  裸包名改写：contract ${c.rewritten} 处，core ${k.rewritten} 处`);
+console.log(`  裸包名改写：${plan.map((t) => `${t.label} ${t.rewritten} 处`).join('，')}`);
 console.log('  提示：产物是只读副本，不要直接改；改 packages/ 下的源再跑一次本脚本。');
