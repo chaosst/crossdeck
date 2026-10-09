@@ -1,23 +1,32 @@
 #!/usr/bin/env node
 /**
- * T7 验收：Electron 壳的 navigate IO（`navigate/client.ts` + `navigate/model.ts`）。
+ * T7 + T8 验收：navigate 的 **IO 层**（两端各一份实现）。
  *
- * 为什么需要这个脚本（而不是等 T12 的自检）：
+ *   T7 · Electron：`shell-electron/src/main/navigate/{client,model}.ts`
+ *   T8 · Web     ：`shell-web/src/navigate/{client,model}.ts`
+ *   共用         ：`core/src/net/navigateStream.ts`（壳无关状态机）＋
+ *                  `core/src/net/chatClient.ts`（ChatClient 端口）
  *
- *   T7 的"完成判据"里有一半是**壳侧兜底**——「首帧超时」「静默关闭不许当正常收尾」
+ * 为什么需要这个脚本（而不是等 T12/T13 的自检）：
+ *
+ *   完成判据里有一半是**壳侧兜底**——「首帧超时」「静默关闭不许当正常收尾」
  *   「abort 要真断连接」。这三条在 UI 上表现为"界面转圈 / 少了半截答案"，
  *   而**看起来都像上游的问题**。真连 navigate 手动试能看出来，但：
- *     · 要把 navigate 跑起来、要一个有效 token、还要在"发出去之后、done 之前"精确杀进程 ——
+ *     · 要把 navigate 跑起来、要一个有效凭据、还要在"发出去之后、done 之前"精确杀进程 ——
  *       手一抖就测不到；
  *     · 手工跑没有回归能力，改一行就可能悄悄退化。
  *
- *   所以这里用**进程内**的假 SSE 上游把这三条变成确定性的断言。
- *   与 T12 的分工：本脚本只测**客户端这一层**的规则（不启动 Electron、不看 DOM）；
- *   T12 测端到端（主进程状态 / 渲染层最后一帧 / DOM `data-stage` 三处一致 + 截图）。
+ *   所以这里用**进程内**的假 SSE 上游把这些变成确定性的断言。
+ *   与自检的分工：本脚本只测**客户端这一层**的规则（不启动 Electron、不看 DOM）；
+ *   自检测端到端（主进程状态 / 渲染层最后一帧 / DOM `data-stage` 三处一致 + 截图）。
+ *
+ *   ⚠️ Web 那几段跑在 **Node 的 fetch** 上，不是浏览器 —— 所以它证明的是
+ *      "我们发出去的请求形状对不对"，**不**证明"浏览器真的带上了 cookie"。
+ *      后者只有真浏览器能验，归 `pnpm selfcheck:web`（T13 会补断言）。
  *
  * 零依赖（除仓库自己的 esbuild devDependency）、**无子进程**：
- *   `client.ts` import 的是 `@crossdeck/core`（指向 .ts 源码），裸 Node 加载不了，
- *   所以用 esbuild 的**进程内 JS API** 打成临时 ESM。
+ *   被测源码 import 的是 `@crossdeck/core`（指向 .ts 源码），裸 Node 加载不了，
+ *   所以用 esbuild 的**进程内 JS API** 打成临时 ESM（三处各打一份：core / electron / web）。
  *   不 spawn 子进程 —— 本机沙箱下用 pipe 派生子进程必 EBUSY（见计划 §2）。
  *   （先例：verify-lint-boundaries.mjs 用 eslint 的 API、verify-type-alignment.mjs 用 typescript。）
  *
@@ -26,35 +35,63 @@
  * ══════════════════════════════════════════════════════════════════
  * 变异测试记录（用来确认这些断言真的有鉴别力）
  * ══════════════════════════════════════════════════════════════════
- * 做法：把 `navigate/client.ts` 改坏一个点 → 重跑本脚本 → 数挂了几条。
+ * 做法：把实现改坏一个点 → 重跑本脚本 → 看挂了几条。
  * ⚠️ 本脚本**现场从 src 打包**，所以改完 src 直接重跑即可，不存在"加载旧 dist"
  *    那种假结果（core 的几个脚本需要先 typecheck，这里不需要）。
  *
+ * ⚠️ 行尾：三个被变异的文件都必须是 **LF**。曾经 `client.ts` 是 CRLF（编辑器默认），
+ *    多行锚点会**静默失配**（表现为一堆 `PATCH-MISS`）。
+ *
+ * ── core 引擎（`core/src/net/navigateStream.ts`）──
  * | 变异                                   | 挂掉断言数 |
  * |---------------------------------------|--------|
- * | M1  去掉 `decoder.decode(value, {stream:true})` 的选项 | 2 |
- * | M2  静默关闭当成正常收尾（`settleEnd()` 顶掉那条 error）  | 3 |
- * | M3  首帧超时报成 `end` 而不是 `error`             | 2 |
- * | M4  `cancel()` 什么都不做（不断连接）              | 1 |
- * | M5  `cancel()` 自己发 `onEnd()`（碰 sink）        | 3 |
- * | M6  `settleError` 去掉幂等位                   | 1 |
- * | M7  未知事件静默丢弃                           | 1 |
- * | M8  `authoritative` 无条件走差量（前缀判断被架空）      | 3 |
- * | M9  `describeHttpStatus` 压成一句通用的           | 3 |
- * | M10 认证改用 `Authorization: Bearer`          | 1 |
- * | M11 token 不再放进 query                      | 1 |
- * | M12 `sources` 不去重                          | 1 |
- * | M13 首帧到了不摘计时器                          | **0** ❗ |
- * | M14 没 token 也照发请求                        | 2 |
+ * | E1  `markFirstByte` 不摘首帧计时器          | 2 |
+ * | E2  `settleError` 去掉幂等位               | 2 |
+ * | E3  `cancel()` 自己发 `onEnd()`（碰 sink）  | 4 |
+ * | E4  静默关闭当正常收尾                      | 5 |
+ * | E5  未知事件静默丢弃                        | 2 |
+ * | E6  `authoritative` 总走差量（前缀判断架空）  | 5 |
+ * | E7  `sources` 不去重                       | 2 |
+ * | E8  状态码压平（401/429/503 一条消息）        | 3 |
+ * | E9  首帧超时报成 `end`                      | 3 |
+ * | E10 `done` 帧不当终态                       | 5 |
  *
- * M13 一开始**存活 0 条** —— 这就是"变异测试捉出没有鉴别力的用例"的活例子：
- * 「首帧到达后摘掉计时器」当时没有任何断言覆盖。而它**不是**纯防御性代码：
- * 少了它，"首字节到了、之后又被卡住"会被误报成**首帧超时**，把一次中途卡顿
- * 说成"连都连不上"，排查方向直接被带偏。
- * → 补了场景 ⑫（首帧已到之后停住）后，M13 实测挂 **2 条**。
- * **后人别删 ⑫**，否则 M13 又会变回不可见。
+ * ── Electron 壳传输层（`shell-electron/.../navigate/client.ts`）──
+ * | 变异                                   | 挂掉断言数 |
+ * |---------------------------------------|--------|
+ * | M1  去掉 `decoder.decode(value,{stream:true})` 的选项 | 2 |
+ * | M2  `cancel()` 什么都不做                  | 1 |
+ * | M3  认证改用 `Authorization: Bearer`       | 1 |
+ * | M4  token 不再放进 query                   | 1 |
+ * | M5  没 token 也照发请求                     | 2 |
+ * | M6  `abortUpstream` 不真断连               | 1 |
+ * | M7  首帧计时器不挂                          | **挂死 → exit≠0**（见下） |
  *
- * 结论：14/14 均被杀死（M13 需 ⑫ 才杀死）。
+ * ── Web 壳传输层（`shell-web/src/navigate/client.ts`）──
+ * | 变异                                   | 挂掉断言数 |
+ * |---------------------------------------|--------|
+ * | W1  丢掉 `credentials:'same-origin'`       | 1 |
+ * | W2  多塞一个 `Authorization` 头             | 1 |
+ * | W3  往 URL 上塞 `?token=`                  | 1 |
+ * | W4  静默关闭当正常收尾                      | 2 |
+ * | W5  `cancel()` 什么都不做                  | 1 |
+ * | W6  首帧计时器不挂                          | 2 |
+ * | W7  `baseUrl` 缺省时拼成绝对路径              | **崩溃 → exit≠0**（见下） |
+ *
+ * 🔴 **M7 / W7 第一次算出来是「挂 0 条」，但那是测量假象，不是测试弱。**
+ *    脚本的失败有两种形态，我一开始只数了第一种：
+ *      ① 断言失败 —— 打 `  ❌ …`，被计数；
+ *      ② 脚本**挂死或崩溃** —— 退出码非 0，但一条 `❌` 都不打。
+ *    · M7（首帧计时器不挂）→ ④ 场景永远等不到终态 → 60s 兜底 `exit 1`；
+ *    · W7（拼 `location.origin`）→ Node 里没有 `location` → `ReferenceError` 崩掉。
+ *    两者**都是被抓住的**。教训：用 `grep '^  ❌'` 当唯一判据会漏掉 ② 这一类，
+ *    判定时必须**同时看退出码**。（与"变异存活分两种"是同一条纪律的延伸：
+ *    先确认测量手段没骗你，再谈测试有没有鉴别力。）
+ *
+ * 结论：**24/24 全部杀死**（其中 M7、W7 是由"挂死/崩溃 → 退出码非 0"杀死的）。
+ *
+ * 历史（T7 单壳时代，14 发里 M13「首帧到了不摘计时器」首测真存活 0 条 ——
+ * 那才属于"测试没有鉴别力"，补场景 ⑫ 后杀死。别删 ⑫，否则会退回去）。
  */
 
 import { createServer } from 'node:http';
@@ -67,6 +104,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHELL = join(ROOT, 'packages', 'shell-electron');
 const NAV_DIR = join(SHELL, 'src', 'main', 'navigate');
+const WEB_NAV_DIR = join(ROOT, 'packages', 'shell-web', 'src', 'navigate');
+const CORE_NET = join(ROOT, 'packages', 'core', 'src', 'net');
 
 // ─────────────────────────────────────────────────────────────
 // 极简断言器（与其余 verify-*.mjs 同款）
@@ -109,30 +148,52 @@ const esbuild = esbuildMod.build === undefined ? esbuildMod.default : esbuildMod
 const OUT_DIR = mkdtempSync(join(tmpdir(), 'crossdeck-navigate-'));
 process.on('exit', () => rmSync(OUT_DIR, { recursive: true, force: true }));
 
-try {
-  await esbuild.build({
-    entryPoints: [join(NAV_DIR, 'client.ts'), join(NAV_DIR, 'model.ts')],
-    outdir: OUT_DIR,
-    // 临时目录里没有 package.json，`.js` 会被当成 CJS —— 必须显式改成 `.mjs`。
-    outExtension: { '.js': '.mjs' },
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    target: 'node22',
-    logLevel: 'warning',
-  });
-} catch (err) {
-  console.error('❌ 打包 navigate/client.ts 失败：');
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+/**
+ * 一次打包：`entries` 同一目录（这样 outbase 就是它，产物名可预测），
+ * 输出到 `OUT_DIR/<sub>/`。分开放是因为三处都有 `client.ts` / `model.ts`，
+ * 混在一个 outdir 里会撞名或被迫带上长路径。
+ */
+async function bundle(entries, sub) {
+  try {
+    await esbuild.build({
+      entryPoints: entries,
+      outdir: join(OUT_DIR, sub),
+      // 临时目录里没有 package.json，`.js` 会被当成 CJS —— 必须显式改成 `.mjs`。
+      outExtension: { '.js': '.mjs' },
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'node22',
+      logLevel: 'warning',
+    });
+  } catch (err) {
+    console.error(`❌ 打包失败（${sub}）：`);
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 }
 
-const { createNavigateClient, NAVIGATE_CHAT_PATH, DEFAULT_FIRST_FRAME_TIMEOUT_MS } =
-  await import(pathToFileURL(join(OUT_DIR, 'client.mjs')).href);
-const { NavigateModel } = await import(pathToFileURL(join(OUT_DIR, 'model.mjs')).href);
+await bundle([join(NAV_DIR, 'client.ts'), join(NAV_DIR, 'model.ts')], 'electron');
+await bundle([join(WEB_NAV_DIR, 'client.ts'), join(WEB_NAV_DIR, 'model.ts')], 'web');
+// core 的壳无关引擎单独打一份：常量与纯格式化函数从这里取，
+// 顺便证明"引擎自己不带任何平台 import"（platform:'node' 下能打出来 ≠ 用了 node）。
+await bundle([join(CORE_NET, 'navigateStream.ts')], 'core');
+
+const load = async (sub, file) => import(pathToFileURL(join(OUT_DIR, sub, file)).href);
+
+const { createNavigateClient } = await load('electron', 'client.mjs');
+const { NavigateModel } = await load('electron', 'model.mjs');
+const { createWebNavigateClient } = await load('web', 'client.mjs');
+const { WebNavigateModel } = await load('web', 'model.mjs');
+const { NAVIGATE_CHAT_PATH, DEFAULT_FIRST_FRAME_TIMEOUT_MS, formatNavigateDiagnostic, createNavigateReporter } =
+  await load('core', 'navigateStream.mjs');
 
 if (typeof createNavigateClient !== 'function') {
   console.error('❌ navigate/client.ts 没有导出 createNavigateClient');
+  process.exit(1);
+}
+if (typeof createWebNavigateClient !== 'function') {
+  console.error('❌ shell-web 的 navigate/client.ts 没有导出 createWebNavigateClient');
   process.exit(1);
 }
 
@@ -264,6 +325,19 @@ const withClient = (deps, opts = {}) =>
   createNavigateClient({
     baseUrl: BASE_URL,
     getToken: () => 'TOKEN-abc',
+    firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+    deps,
+    ...opts,
+  });
+
+/**
+ * Web 壳的同一个上游（**没有 getToken** —— 凭据走同源 cookie，由浏览器带）。
+ * `baseUrl` 指向假上游：它在本脚本里代表**同源反代**（真同源要 navigate 与站点
+ * 同 host:port，本机跑不动）。
+ */
+const withWebClient = (deps, opts = {}) =>
+  createWebNavigateClient({
+    baseUrl: BASE_URL,
     firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
     deps,
     ...opts,
@@ -713,7 +787,300 @@ console.log('\n── ⑫ 首字节已到之后停住：**不许**误报"首帧�
 }
 
 // ═════════════════════════════════════════════════════════════
-server.close();
+console.log('\n── ⑬ Web 壳 · 请求形状与认证（同源 cookie，不落地凭据）──');
+// ═════════════════════════════════════════════════════════════
+{
+  requests.length = 0;
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('你');
+    w.done();
+    w.end();
+  };
+
+  // 假上游在另一个端口 —— 它在这里**代表同源反代**（真同源要 navigate 与站点同
+  // host:port，本机跑不动）。所以下面断言的是**我们发出的那个选项**，
+  // 而不是"Node 里 cookie 真的带上了"（Node 的 fetch 根本不实现 cookie jar）。
+  const realFetch = globalThis.fetch;
+  let seenInit = null;
+  globalThis.fetch = (input, init) => {
+    seenInit = init;
+    return realFetch(input, init);
+  };
+
+  const deps = fakeDeps();
+  const diag = [];
+  const h = collect();
+  try {
+    withWebClient(deps, { onDiagnostic: (d) => diag.push(d) }).streamChat(
+      { sessionId: 'w1', prompt: '你好' },
+      h.sink,
+    );
+    await h.terminalArrived;
+    await settleAndCheck('⑬', h, deps);
+
+    const req = requests[0];
+    const url = new URL(req.url, BASE_URL);
+    check('⑬ 方法是 POST 且路径是 /api/resume/chat',
+      req.method === 'POST' && url.pathname === NAVIGATE_CHAT_PATH,
+      `${req.method} ${url.pathname}`);
+    // 反向断言：Web 壳**不许**把凭据塞进 URL —— 那是 Electron 的做法。
+    check('⑬ **没有** ?token=（Web 靠 cookie）', !url.searchParams.has('token'), req.url);
+    check('⑬ **没有** Authorization 头', req.headers.authorization === undefined,
+      String(req.headers.authorization));
+    // 这条是"页面在浏览器里到底会不会带 cookie"的**唯一**客户端开关。
+    // 掉了它 → 线上每次都是 401，而本地 Node 测不出来（Node 不实现 cookie）。
+    check('⑬ 带了 credentials: same-origin（不写 = 跨源请求默认省略 cookie）',
+      seenInit?.credentials === 'same-origin', String(seenInit?.credentials));
+    check('⑬ body 是 {question}', req.body === JSON.stringify({ question: '你好' }), req.body);
+
+    const reqDiag = diag.find((d) => d.type === 'request');
+    check('⑬ 诊断标识认证方式为 cookie（且不含任何凭据）',
+      reqDiag !== undefined && reqDiag.auth === 'cookie' && !JSON.stringify(reqDiag).includes('token='),
+      JSON.stringify(reqDiag));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// 同源部署时 baseUrl 留空 → 打**相对路径**（浏览器按当前 origin 解析）。
+// 这条只能靠诊断看：Node 的 fetch 不接受相对 URL，发不出去。
+{
+  const deps = fakeDeps();
+  const diag = [];
+  const h = collect();
+  const cancel = createWebNavigateClient({
+    firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+    deps,
+    onDiagnostic: (d) => diag.push(d),
+  }).streamChat({ sessionId: 'w1b', prompt: 'q' }, h.sink);
+  await sleep(30);
+  const reqDiag = diag.find((d) => d.type === 'request');
+  check('⑬b baseUrl 缺省 → endpoint 是不带 origin 的相对路径',
+    reqDiag !== undefined && reqDiag.endpoint === NAVIGATE_CHAT_PATH,
+    JSON.stringify(reqDiag));
+  cancel();
+  await sleep(30);
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑭ Web 壳 · 正常路径：逐帧 → done（含多字节跨片）──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = async (_req, res) => {
+    const w = sse(res);
+    // 与 Electron 侧同款做法：把**一整帧**的字节在"中"字中间切开（1 字节 + 2 字节），
+    // 分两次写、中间隔开，避免 TCP 把两片合并（合并了这条用例就失去鉴别力：
+    // `{stream:true}` 漏掉也照样能拼对）。
+    const frame = Buffer.from('event: token\ndata: "中文"\n\n', 'utf8');
+    const cut = frame.indexOf(Buffer.from('中', 'utf8')) + 1;
+    w.raw(frame.subarray(0, cut));
+    await sleep(80);
+    w.raw(frame.subarray(cut));
+    w.token('好');
+    w.done();
+    w.end();
+  };
+
+  const deps = fakeDeps();
+  const h = collect();
+  withWebClient(deps).streamChat({ sessionId: 'w2', prompt: 'q' }, h.sink);
+  await h.terminalArrived;
+  await settleAndCheck('⑭', h, deps);
+  check('⑭ 中文被切在两片里仍然完整（decoder 的 {stream:true} 没漏）', h.text() === '中文好', h.text());
+  check('⑭ 没有出现替换字符 U+FFFD', !h.text().includes('\uFFFD'), JSON.stringify(h.text()));
+  check('⑭ 正常收尾是 end 不是 error', h.terminals[0] === 'end', JSON.stringify(h.terminals));
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑮ Web 壳 · 静默关闭（无 done）→ 必须 error ──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('半截答案');
+    w.end(); // ← 没有 done
+  };
+
+  const deps = fakeDeps();
+  const h = collect();
+  withWebClient(deps).streamChat({ sessionId: 'w3', prompt: 'q' }, h.sink);
+  await h.terminalArrived;
+  await settleAndCheck('⑮', h, deps);
+  check('⑮ 静默关闭 → error（不是 done）', h.terminals[0]?.startsWith('error:') === true,
+    JSON.stringify(h.terminals));
+  check('⑮ 错误消息点名"没收到 done"', (h.terminals[0] ?? '').includes('没收到 done'), h.terminals[0]);
+  check('⑮ 已经收到的半截内容没被吞掉', h.text() === '半截答案', h.text());
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑯ Web 壳 · 首帧超时 15s（不必等 runtime 的 60s 兜底）──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = (_req, res) => {
+    // 给了响应头就不给字节 —— 最像"反代连上了但 navigate 卡住"的形态
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+  };
+
+  const deps = fakeDeps();
+  const h = collect();
+  withWebClient(deps).streamChat({ sessionId: 'w4', prompt: 'q' }, h.sink);
+  await sleep(50);
+  check('⑯ 还没到时间：不该有任何终态', h.terminals.length === 0, JSON.stringify(h.terminals));
+  deps.fireAll();
+  await sleep(40);
+  await settleAndCheck('⑯', h, deps);
+  check('⑯ 首帧超时 → error，且消息写明 15s',
+    h.terminals[0]?.startsWith('error:上游首帧超时') && h.terminals[0].includes('15000'),
+    h.terminals[0]);
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑰ Web 壳 · cancel() → 真断连，且 sink 一个终态都收不到 ──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('开始');
+    // 之后一直挂着：不 done、不 error、也不关
+  };
+
+  const before = closedByPeer;
+  const deps = fakeDeps();
+  const h = collect();
+  const cancel = withWebClient(deps).streamChat({ sessionId: 'w5', prompt: 'q' }, h.sink);
+  await sleep(60);
+  check('⑰ 取消前已经收到内容', h.text() === '开始', h.text());
+
+  cancel();
+  await sleep(80);
+  check('⑰ 服务端观察到对端断开了（不是"把 reader 丢掉"这种假取消）',
+    closedByPeer > before, `${before} → ${closedByPeer}`);
+  check('⑰ 取消后 sink **一个终态都没有**（终态归 runtime 决定）',
+    h.terminals.length === 0, JSON.stringify(h.terminals));
+  check('⑰ 取消后没有残留定时器', deps.pending() === 0, `还挂着 ${deps.pending()} 个`);
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑱ Web 壳 · authoritative 差量补齐 / 前缀不成立 ──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('前半');
+    w.frame('answer', JSON.stringify('前半后半')); // 前缀成立 → 只补"后半"
+    w.done();
+    w.end();
+  };
+  {
+    const deps = fakeDeps();
+    const diag = [];
+    const h = collect();
+    withWebClient(deps, { onDiagnostic: (d) => diag.push(d) }).streamChat({ sessionId: 'w6', prompt: 'q' }, h.sink);
+    await h.terminalArrived;
+    check('⑱ 前缀成立 → 只补吐尾巴（不是重复全文）', h.text() === '前半后半', h.text());
+    check('⑱ 上报了 authoritative-delta', diag.some((d) => d.type === 'authoritative-delta'), diag.map((d) => d.type).join(','));
+  }
+
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('已经吐过的');
+    w.frame('answer', JSON.stringify('完全不同的全文')); // 前缀不成立
+    w.done();
+    w.end();
+  };
+  {
+    const deps = fakeDeps();
+    const diag = [];
+    const h = collect();
+    withWebClient(deps, { onDiagnostic: (d) => diag.push(d) }).streamChat({ sessionId: 'w7', prompt: 'q' }, h.sink);
+    await h.terminalArrived;
+    check('⑱ 前缀不成立 → 宁可重复也不静默丢（补吐全文）',
+      h.text() === '已经吐过的完全不同的全文', h.text());
+    check('⑱ 上报了 authoritative-replace（这是"契约可能理解错了"的信号）',
+      diag.some((d) => d.type === 'authoritative-replace'), diag.map((d) => d.type).join(','));
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑲ Web 壳 · 未知事件上报 + sources 去重 ──');
+// ═════════════════════════════════════════════════════════════
+{
+  handler = (_req, res) => {
+    const w = sse(res);
+    w.token('x');
+    w.frame('thinking', '{"step":1}'); // 上游将来新增的事件
+    w.frame('sources', JSON.stringify(['a.md', 'a.md', 'b.md']));
+    w.done();
+    w.end();
+  };
+
+  const deps = fakeDeps();
+  const diag = [];
+  const h = collect();
+  withWebClient(deps, { onDiagnostic: (d) => diag.push(d) }).streamChat({ sessionId: 'w8', prompt: 'q' }, h.sink);
+  await h.terminalArrived;
+  const unknown = diag.find((d) => d.type === 'unknown-event');
+  check('⑲ 未识别事件被上报，不静默丢弃', unknown !== undefined && unknown.event === 'thinking',
+    JSON.stringify(unknown));
+  const src = diag.find((d) => d.type === 'sources');
+  check('⑲ sources 去重（3 项 → 2 项）', src !== undefined && src.sources.length === 2,
+    JSON.stringify(src?.sources));
+  check('⑲ 未知事件不影响正常收尾', h.terminals[0] === 'end', JSON.stringify(h.terminals));
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑳ WebNavigateModel：与 Electron 侧签名同形 ──');
+// ═════════════════════════════════════════════════════════════
+{
+  const seen = [];
+  const fakeCancel = () => {};
+  const client = {
+    streamChat(req, sink) {
+      seen.push(req);
+      sink.onChunk('X');
+      sink.onEnd();
+      return fakeCancel;
+    },
+  };
+  const deps = fakeDeps();
+  const h = collect();
+  const model = new WebNavigateModel({ client, deps });
+  const cancel = model.stream({ sessionId: 'sess-w', prompt: '问一句' }, h.sink);
+
+  check('⑳ ModelRequest → ChatRequest 字段一对一搬',
+    seen.length === 1 && seen[0].sessionId === 'sess-w' && seen[0].prompt === '问一句', JSON.stringify(seen));
+  check('⑳ 原样返回 client 的取消函数', cancel === fakeCancel);
+  check('⑳ sink 回调原样透传', h.text() === 'X' && h.terminals[0] === 'end',
+    `${h.text()} / ${JSON.stringify(h.terminals)}`);
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ㉑ core 的纯诊断格式化（core 不碰 console，落日志归壳）──');
+// ═════════════════════════════════════════════════════════════
+{
+  const warn = formatNavigateDiagnostic({
+    type: 'unknown-event', at: 0, event: 'thinking', raw: 'x',
+  });
+  check('㉑ 未识别事件是 warn 级', warn.level === 'warn' && warn.text.includes('thinking'), JSON.stringify(warn));
+
+  const end = formatNavigateDiagnostic({ type: 'terminal', at: 0, kind: 'end', message: null });
+  check('㉑ 正常终态是 log 级、且不带多余冒号', end.level === 'log' && !end.text.includes('：'), JSON.stringify(end));
+
+  // 注入式日志口：core 不知道 console 是什么，只有形状约束。
+  const lines = [];
+  const reporter = createNavigateReporter({
+    log: (...a) => lines.push(['log', a.join(' ')]),
+    warn: (...a) => lines.push(['warn', a.join(' ')]),
+  });
+  reporter({ type: 'chunk', at: 1, len: 3, total: 3 });
+  reporter({ type: 'authoritative-replace', at: 2, emittedLen: 1, textLen: 9 });
+  check('㉑ createNavigateReporter 按级别路由到注入的日志口',
+    lines.length === 2 && lines[0][0] === 'log' && lines[1][0] === 'warn', JSON.stringify(lines));
+}
+
+
+
 const total = passed + failures.length;
 console.log('\n──────────────────────────────────────────');
 if (failures.length === 0) {
