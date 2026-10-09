@@ -291,7 +291,7 @@ struct Index {
       const ttft: string = u.ttftMs === undefined ? '?' : `${u.ttftMs}`;
       const merged: number = u.mergedChunks === undefined ? 0 : u.mergedChunks;
       this.streamMeta =
-        `事件 ${summarize(this.types)} ｜ 首token ${ttft}ms ｜ 共 ${u.totalMs}ms ｜ 合并 ${merged} 次`;
+        `事件 ${summarize(this.types)} ｜ 首帧 ${ttft}ms ｜ 共 ${u.totalMs}ms ｜ 合并 ${merged} 次`;
       this.running = false;
       this.paused = false;
     } else if (event.type === 'error') {

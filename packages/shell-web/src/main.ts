@@ -201,7 +201,7 @@ root.append(
     } else if (event.type === 'done') {
       const u = event.usage;
       meta.textContent =
-        `事件序列：${summarize(types)} ｜ 首 token ${u.ttftMs ?? '?'}ms ｜ 共 ${u.totalMs}ms ｜ ` +
+        `事件序列：${summarize(types)} ｜ 首帧 ${u.ttftMs ?? '?'}ms ｜ 共 ${u.totalMs}ms ｜ ` +
         `${u.completionTokens} 字符 ｜ 合并 ${u.mergedChunks ?? 0} 次`;
       runId = null;
       setPaused(false);

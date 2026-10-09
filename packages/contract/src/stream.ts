@@ -28,10 +28,28 @@ export interface PlanStep {
 }
 
 export interface Usage {
+  /**
+   * ⚠️ **字符数，不是 token 数。**
+   *
+   * 上游（navigate）**不返回 usage**，所以没有 tokenizer 可依。这两个字段装的是
+   * 输入 / 输出的**文本长度**（`run.input.length` / 泵实际吐出的字符数）。
+   *
+   * 名字沿用了 OpenAI 兼容接口的形状，但**别拿它当计费口径**：
+   * 「字符数」与「token 数」在中文下能差出接近一个数量级。
+   * 三端 UI 的标签一律写「字符」，不写 tokens。
+   */
   promptTokens: number;
   completionTokens: number;
   totalMs: number;
-  /** 首 token 延迟，流式体验的关键指标 */
+  /**
+   * **本地首帧延迟**：从 `pump.start()` 到泵**第一次吐出**一帧的时间（毫秒）。
+   *
+   * ⚠️ 它**不含上游首 token 延迟** —— 起点在 run 开始，终点在泵的第一次 flush，
+   * 中间上游还没吐出任何东西时这个数就已经在计时了。接脚本上游时它约等于
+   * `produceIntervalMs + flushIntervalMs`（12+16≈28ms）；接真实上游后它会
+   * 变成「上游首 token + 本地泵延迟」，那时它就不再是"本项目自有开销"的度量。
+   * 需要区分两者时得另加采集点（当前没有）。
+   */
   ttftMs?: number;
   /**
    * 流控健康度：因消费端跟不上而**合并中间态**的次数（M4 背压）。

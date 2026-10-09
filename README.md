@@ -88,7 +88,7 @@ pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 点击
 
 ## 验证：凭什么说它是成立的
 
-### 1. 类型安全 IPC 与跨环境边界（`pnpm verify:ipc`，13/13 通过）
+### 1. 类型安全 IPC 与跨环境边界（`pnpm verify:ipc`，16/16 拦住）
 
 只跑正例是不够的 —— 一个把类型写成 `any` 的项目同样能通过正例。
 所以要证明**写错会被挡住**：
@@ -106,6 +106,14 @@ pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 点击
 | I | 把 fs 通道的 `res` 当残缺类型用（`res` 存的是**最终值**，不是 `Promise`） | 拦住 |
 | **J** | **Web 壳（试金石）`import 'node:fs'`** | 拦住 |
 | **K** | **Web 壳读 `process.env`** | 拦住 |
+| L | 把 invoke 通道传给 `on()`（调用与推送两张表必须互斥，否则一条通道会有两种用法） | 拦住 |
+| M | `UpdateStatus` 判别联合：`available` 阶段访问 `percent` —— 这是「永远转圈」的类型级拦截 | 拦住 |
+| N | `GuestLoginResult` **没有** `token` 字段 —— 渲染层"顺手读一下"就编译不过 | 拦住 |
+| O | `NavigateLoginStatus` 同样没有 `token`（与 N 是**两条不同的路**，不是重复） | 拦住 |
+| P | `setNavigateUpstream` 只收 `string \| null`，收不了"顺便把 token 传上来"的扩展形状 | 拦住 |
+
+N / O / P 是接真实上游时才补的：新增通道最容易在**凭据**这一处被悄悄撑开一个口子，
+而"凭据只活主进程"这条约束的证据不该是文档，应该是**编译不过**。
 
 做法不是跑 `tsc` 子进程，而是用 Compiler API 在进程内检查 ——
 所以每个负例都能**落在它所属的 tsconfig 项目里**验证，跨环境的越界引用（F/G/J/K）才抓得住。
@@ -190,7 +198,7 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 | `agent:control` 对不存在的 runId 必须抛 `NOT_FOUND` | 静默成功会让 UI 状态与真实状态不一致 |
 | 渲染层控制台零错误 | 白屏类问题的最直接信号 |
 
-### 5. Agent 内核的确定性单测（`pnpm verify:agent`，83/83 通过）
+### 5. Agent 内核的确定性单测（`pnpm verify:agent`，103/103 通过）
 
 这个脚本存在的唯一理由：把「跑一遍端到端、等几秒、看 token 数对不对」
 换成可以精确到**第 N 帧推了什么**的断言。
@@ -213,7 +221,7 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 有一条**坏消息**也写在了脚本头部：`AgentRuntime.#settle` 的重复终结保护
 在现有调用方下**不可达**（变异存活 0 条），所以不能假装它被测到了。
 
-### 6. Web 壳端到端自检（`pnpm selfcheck:web`，61/61 通过）
+### 6. Web 壳端到端自检（`pnpm selfcheck:web`，101 项断言）
 
 这是「core 平台无关」这条论断的**运行时**证据 —— 编译通过只证明静态层面，
 证明不了它真能跑。产物在 `docs/evidence/`：`web-selfcheck.json`、`web-shell.png`。
@@ -236,14 +244,21 @@ J / K 不是 F / G 的重复：它们落在 `shell-web` 这个**第三个环境*
 | 工具链路 | `start → tool → tool_end → token* → done` |
 | **真实 UI 点击** | 点「授权」→ 文件树有 2 条；点「试读 ../」→ 界面上出现 `SCOPE_DENIED:OUT_OF_SCOPE` |
 | core 导出核验 | 页面报上来的绑定名，由运行器 import `core/dist` 逐个核对（压缩会把 `.name` 改成单字母，所以这条只能在 Node 侧做） |
+| **真实上游链路** | 同源假 SSE 上游：匿名必须 401 → guest 登录 → 五场景（正常 / 干净 EOF / socket 销毁 / 上游 error / 中途 abort）；断言逐帧到达、正文逐字一致、`completionTokens` 与文本长度相等、诊断里凭据形态确实是 cookie；**对端**看见 `abort` 断连 |
+| **反向（词表）** | 不认识的场景必须 400 —— 证明前面那些是**被词表认出来**的，而不是"假上游对什么 prompt 都吐同一套" |
 
-**变异测试**（三组，各自挂的正是对应的那条断言）：
+假上游与**鸿蒙壳的验证脚本共用同一份实现**（`scripts/fake-navigate-upstream.mjs`）：
+两个宿主脚本各抄一套的话，场景词表会长出两个版本 —— 一端改了 prompt、另一端还认旧的，
+症状是"这个场景不存在（400）"，看起来像客户端的问题。
+
+**变异测试**（四组，各自挂的正是对应的那条断言）：
 
 | 变异 | 挂掉的断言 |
 |---|---|
 | `resolveInWorkspace` 不带 `withinWorkspaceId` | `scope.prefixTrapDenied` + `scope.crossWorkspaceDeniedBothWays` |
 | UI 只显示原因、隐去错误码 | `ui.escapeDenialVisible` |
 | `AgentRuntime.pause` 变成空操作 | `backpressure.pauseFreezesStream` |
+| 真实上游那 7 发（abort 不断连 / 干净 EOF 当正常收尾 / 终态多投递一次 / 两条断流合成一条 / 去掉 cookie 闸门 / 凭据形态报错 / 不上报 `navRan`） | 见 §10 —— 7 发 7 杀，存活 0 条 |
 
 ### 7. 自动更新链路（`pnpm verify:update-feed`，须先 `pnpm pack:win`）
 
@@ -295,11 +310,12 @@ checking → available(9.9.9) → downloading(0%) → downloading(100%) → read
 | 冷启动到首帧可交互 | < 1200 ms | **316 – 935 ms** | ✅ 最坏值余量 22% |
 | 主进程常驻内存 | < 150 MB | **138.3 – 144.4 MB** | ⚠️ 最坏值余量仅 3.7% |
 | 渲染进程内存 | < 250 MB | **39.6 – 40.9 MB** | ✅ 余量 84% |
-| 流式首 token 延迟 | < 300 ms | **27 – 28 ms** | ✅ 余量 91% |
+| 本地首帧延迟（不含上游） | < 300 ms | **27 – 28 ms** | ✅ 余量 91% |
 | 流式帧率 | ≥ 55 fps | **179 – 180 fps** | ✅ 见下 |
 | Win 安装包体积 | < 100 MB | **98.1 MB** | ⚠️ 余量仅 1.9% |
 
 同机、同产物、同命令跑 4 次，表里给的是**范围**；判定一律取**最坏值**。
+（接真实上游改造后又抽样复测了 4 趟，`ttft` 落在 27 – 29 ms，与归档值同一区间；详见下面第 4 点。）
 
 四处容易糊弄过去、这里偏要说清的：
 
@@ -321,6 +337,27 @@ checking → available(9.9.9) → downloading(0%) → downloading(100%) → read
    换到 60Hz 机器，这条的天花板就是 60 —— 它真正测的是"流式有没有把主线程堵死"，
    而这件事与刷新率无关：真堵住了，180Hz 上也掉到个位数。
 
+4. **口径订正：「流式首 token 延迟」→「本地首帧延迟」。** 这一条以前是写错的，
+   现在更正。`Usage.ttftMs` 量的是 **run 开始 → 背压泵第一次吐出一帧**
+   （`backpressure.ts:#flush`），起点时上游**还没有吐出任何东西** ——
+   所以它量的是**本项目自己的**调度开销，不是端到端首 token 延迟。
+   在 `pnpm selfcheck` 这条链路上上游是脚本化的，这个数就约等于
+   `produceIntervalMs + flushIntervalMs`（12 + 16 ≈ 28 ms），与上游无关。
+
+   **理由**：留着旧名字会让读者把 27 ms 读成"接了真模型也只要 27ms 就出字"，
+   而那是错的 —— 真实上游下这个数会被上游首 token 主导，可能变成几百毫秒。
+
+   **代价**：现在表里**没有**端到端首 token 延迟这一项了。要拿到它得在
+   `navigateStream` 收到**首个上游 chunk** 的时刻再打一个点，把它和泵的首帧分开记录 ——
+   那是一次采集点的增加（改 core），不是改个标签就能有。当前刻意不做：
+   在脚本上游下它只会量出"本地回环有多快"，是个好看但没有信息量的数字。
+   接上真实 navigate 之后再补这一项才有意义。
+
+   **复测**（改造之后，同一台机器）：4 趟得到 `27 / 27 / 28 / 29 ms`，与归档区间一致。
+   另有 1 趟读到 `17 ms`，但**同一趟**渲染层的 rAF 探针是 `0 fps` ——
+   说明那趟窗口没上屏、整条链路处于退化状态。那个 17ms 仍来自泵（相位不同罢了），
+   但它不适合和正常趟一起报：**看到一个好看的数之前，先确认这一趟是不是正常的**。
+
 两项虽然达标但**贴近上限**，改进项写在 `docs/perf.md` §3。
 不达标或快不达标就如实写清并给出下一步 —— 而不是把标尺挪一挪。
 
@@ -330,7 +367,9 @@ checking → available(9.9.9) → downloading(0%) → downloading(100%) → read
 但证明不了**可移植** —— 除非真有一个非同族的壳跑起来。
 
 一条命令走完全链路：同步源码 → `hvigorw assembleHap` → `hdc install` →
-`aa start` → UI 点击 → 截图 → 归档 → 判定：
+`aa start` → UI 点击 → 截图 → 归档 → 判定。
+
+下面这一段是**真机跑通那一次**的输出（改造前，所以还没有自检面板那几步）：
 
 ```
 ✅ 工具链              DevEco @ D:/software/DevEco Studio
@@ -345,6 +384,15 @@ checking → available(9.9.9) → downloading(0%) → downloading(100%) → read
 ✅ 点击「带工具」→ ohos-shell-tool.jpg
 ```
 
+现在它还多走三步（**尚未在真机上复现过** —— 手上的机器没有模拟器，跑不了就不写假输出）：
+
+1. **带配置启动**：`aa start … --ps upstreamUrl <宿主> --ps ohosToken <token>`
+   → `EntryAbility` 把值放进 `AppStorage` → 页面的 `@StorageLink` 读出来。
+2. **慢流中间帧**：点「自检·慢流」，在流还没结束时抓一帧 —— 判定是
+   UI 树上出现了**终文的真前缀且更短**（截图文件存在证明不了逐字）。
+3. **跑判定**：点「自检·跑判定」，应用只打印 `[SELFCHECK]` 原始数字，
+   判定交给脚本（见下面第 1 点）。
+
 截图证据在 `docs/screenshots/`。UI 里跑的都是**同一份** core：
 会话列表来自 `core/session/store`，流式来自 `core/agent/runtime` +
 `core/events/streamBus`，能力表来自 `shared/ports.ets` 的运行时探测
@@ -356,18 +404,47 @@ UI 据此少渲染一块 —— 这是设计结果，不是降级事故）。
 - 纯流式 —— `start×1 → token×N → done×1`
 - 工具链路 —— `start×1 → tool×1 → tool_end×1 → token×N → done×1`
 
-两者都带首 token 延迟、总耗时与「合并 0 次」。**具体数值不写进 README** ——
+两者都带首帧延迟、总耗时与「合并 0 次」。**具体数值不写进 README** ——
 它每次跑都会变，抄进来只会变成过期数字；要看精确值请读截图本身或
 `docs/evidence/ohos-selfcheck.json`。
 
-三个设计点：
+四个设计点：
 
-1. **三种"跑不了"被严格区分，且都返回非零**：工具链缺失 / 设备不在线 /
-   编译或安装失败 —— 报告里落成 `skipped` 而不是 `ok`。这和 Electron 侧
+1. **四种"跑不了"被严格区分，且都返回非零**：工具链缺失 / 派生子进程被拒 /
+   设备不在线 / core 产物缺失 —— 报告里落成 `skipped` 而不是 `ok`。这和 Electron 侧
    "未打包形态必须报 `error` 而不是永远转圈"是同一条原则：
    **环境不具备时如实说，不假装成功**。失去鸿蒙环境的机器上跑它也不会给出假绿。
 
-2. **「成功」的判定方式本身要先被验证。** 这个脚本的第一版是**假绿的**，
+   ⚠️ **中间那两条必须分开**：受限会话里 `hdc list targets` 自己也会 `EBUSY`，
+   不区分就会把**环境问题**报成**设备问题** —— 排查方向当场就错。
+   （本仓库的受限会话里跑它：停在设备探测那一步，exit 2、`skipped: 'spawn-blocked'`。）
+
+2. **判定必须落在脚本里，不能由被测应用自己宣布。** 模拟器里的自检只打印
+   `[SELFCHECK]` 原始数字，成败由宿主脚本判。判定逻辑抽成了一个**纯函数**
+   （`parse-ohos-selfcheck.mjs`），因为真机上够不着它的时候还得能验它 ——
+   `pnpm verify:ohos-judge` 用**合成行**驱动它做变异测试，不需要设备、不派生进程：
+
+   | 变异 | 被哪一条杀掉 |
+   |---|---|
+   | 终态数 1→2 | 场景 normal · 恰好一个终态 |
+   | 两条断流合成一条 | 场景 killed · 措辞 |
+   | 断流当成功 | 场景 silent-close · 终态与错误码 |
+   | abort 没被认出来 | 场景 abort · 终态与错误码 |
+   | 少收几片 / 正文差 1 字 | 场景 normal · 逐帧 / 正文长度 |
+   | 不认识场景没被拒 | 反向 · 不认识场景被拒 |
+   | 上游给截断场景也发了 done | 对端 · 截断场景没发 done |
+   | 停止没真断连 | 对端 · 看见了 abort 断连 |
+   | 没有 DONE 行 | 自检跑完 |
+
+   13 发变异 + 1 发**反向**（把期望表里承重的那条 `msgHas` 拿掉，对应的坏输入必须
+   变得**杀不掉**）—— 全部符合预期。反向那条是必要的：只证明"改坏输入会挂"还不够，
+   得证明挂**确实靠那条断言**，否则可能只是别的断言恰好也不同意。
+
+   这个抽取当场抓到一个真缺陷：解析器把 `text=` / `frames=` 当成必需字段，
+   而应用给 `unknown` 那行**不打**这两个字段 → 反向断言**恒红**，
+   真机上"跑对了"也会报失败。改真机之前抓到的。
+
+3. **「成功」的判定方式本身要先被验证。** 这个脚本的第一版是**假绿的**，
    而且是两层，都很安静：
 
    | 层 | 症状 | 根因 |
@@ -379,7 +456,7 @@ UI 据此少渲染一块 —— 这是设计结果，不是降级事故）。
    这个 grep 起来毫无异常的细节是唯一线索。顺着它实测 `hdc file recv`
    才发现退出码不可信，再往前才挖到后缀限制。
 
-3. **点击坐标也错过，而且错得更隐蔽。** 第一版按截图像素估坐标，点空；
+4. **点击坐标也错过，而且错得更隐蔽。** 第一版按截图像素估坐标，点空；
    改成从 UI 树取 bounds 后**还是错的** ——
    用 `indexOf('"text":"X"')` 再向后 slice 找第一个 `"bounds"`，拿到的是
    **下一个节点**的（attributes 里 `bounds` 排在 `text` 之前）。后果是整体错位一个按钮：
@@ -397,6 +474,105 @@ UI 据此少渲染一块 —— 这是设计结果，不是降级事故）。
 
    一条能带走的经验：**"看起来成功了"和"真的成功了"之间的距离，
    往往就是一个 mtime 或一个哈希。**
+
+### 10. 同一份 core，两个上游实现
+
+这一节先说清定位，再讲接线。**crossdeck 不是"navigate 的桌面客户端"** ——
+那会把它讲成又一个聊天壳，而它真正要示范的是**跨端桌面工程**：
+**同一份 core，两个上游实现**。
+
+「上游」在这里是**业务内容**，不是架构的主角：脚本上游（离线的 `ScriptedModel`）
+与 navigate 上游（HTTP + SSE）可以互换，换掉它，**三个壳与 core 一行都不用改**。
+下面这张表就是这句话的展开。
+
+#### 10.1 为什么自检之外还要接真实上游
+
+脚本上游能证明"壳会不会把事件正确转发出去"，证明不了 HTTP/SSE 这一层 ——
+而端侧真正会出事的地方恰好都在那儿：
+
+| 只在真上游下才会暴露的 | 症状 |
+|---|---|
+| 首字节迟迟不来 | 界面**永远转圈**（没有首帧超时的话） |
+| `decode(bytes, { stream: true })` 漏了 `stream` | 偶发**乱码**（按字节边界切坏多字节字符） |
+| Web 壳掉了 `credentials: 'same-origin'` | 本地 Node 测不出来，线上**每次 401** |
+| 上游提前关流 / socket 被销毁 | 两种**不同**的失败路径，合成一条就漏一个 |
+| `cancel()` 只"不再读"而没真断连 | 上游继续跑，账单继续烧 |
+
+#### 10.2 三端各自的 IO 实现（这是差异，不是重复）
+
+|  | Electron 壳 | Web 壳 | 鸿蒙壳 |
+|---|---|---|---|
+| 上游实现 | `main/navigate/client.ts`，主进程 `fetch` | `createWebNavigateClient`，页面内 `fetch` | `createOhosNavigateClient`，`@kit.NetworkKit` |
+| 凭据 | `?token=`，**只活主进程** | **同源 httpOnly cookie** | token 进 **body** |
+| 断连 | `AbortController.abort()` | 同左 | `httpRequest.destroy()` |
+| 流结束信号 | `event: done` | 同左 | **`dataEnd` 回调**（`complete` 正常/异常都会发） |
+| 首帧计时 | 挂在 `await fetch` **外面** | 同左 | `dataReceive` 里先 `markFirstByte()` |
+
+共同的部位是 `core/src/net/navigateStream.ts` —— 里面的首帧超时计时器、SSE 分帧、
+帧 → 事件的映射、**幂等终态**、`authoritative` 差量补吐、取消记账，三端**一份**。
+
+**为什么 `fetch` 不能搬进 core**：core 的 `lib` 只有 ES2022，拿不到
+`Response` / `AbortController` / `URL` 的类型；给它加 DOM lib 会**同时**毁掉两件事 ——
+「Web 壳是试金石」（它靠 core 编不过 `node:*` 来证明 core 无平台假设）和
+「contract/core 可被 ArkTS 直接消费」。所以分界线画在**已解码的文本**上：
+壳负责字节 → 文本，core 负责文本 → 事件；要硬断连时 core 只喊一声
+`abortUpstream()`，自己不碰网络。
+
+同理，**core 里不能写 `console`**（它连 `console` 的类型都没有）：core 只产出
+`{ level, text }`，由壳传 `createNavigateReporter(console)` 落盘。
+**落日志是 IO，IO 归壳。**
+
+#### 10.3 能力探测怎么降级
+
+core 用 `capabilities.has('x')` 分支，**不写** `if (platform === 'electron')` ——
+后者会让第三端变成一串 `else`。`Platform` 只用于日志诊断。
+
+| 能力 | Electron | Web | 鸿蒙（phone） | 没有时的 UI 行为 |
+|---|---|---|---|---|
+| `fs.scope` | ✅ | ✅（OPFS；没有 `navigator.storage.getDirectory` 就没有） | ✅ | 没有就不渲染文件树 |
+| `notify.system` | ✅ | ✅（`typeof Notification !== 'undefined'` 才有） | ✅ | 没有就不渲染通知开关 |
+| `window.multi` | ✅ | ❌ | ❌（`deviceType = phone`；`2in1` / `tablet` 才有） | 多窗口那块显示 `—` |
+| `shortcut.global` | ✅ | ❌ | ❌ | 不渲染快捷键提示 |
+| `tray` | ✅ | ❌ | ❌ | 不渲染托盘入口 |
+| `update.auto` | ✅ | ❌ | ❌ | 不渲染更新入口 |
+
+⚠️ 两个能力是**运行时读出来的**，不是写死的：Web 的 `fs.scope` 取决于 OPFS 在不在，
+鸿蒙的 `window.multi` 取决于 `deviceInfo.deviceType`。同一条断言在自检里写成了
+`has('fs.scope') === (typeof navigator.storage.getDirectory === 'function')` ——
+**把能力表和探测源绑在一起**，免得日后有人把它改成常量还能通过。
+
+还有一点容易混：`update.auto` 在 Electron 上**恒在**（更新入口照渲染），
+"没打包就不能更新"是**调用时**的失败（`UNSUPPORTED:NOT_PACKAGED`），
+不是能力探测的结果。把这两件事混起来，就会出现"没打包 → 连入口都不显示 →
+用户以为这功能不存在"。
+
+关键是**假实现比没有实现更糟**：缺能力时宁可少渲染一块，也不给一个点了没反应的按钮。
+所以 Web 壳自检里有一条专门断言 `window.multi` / `tray` / `update.auto` **明确不在**
+（而不是"探测失败"）。同样的口径在凭据上：`safeStorage` 不可用时 Electron 壳
+**如实降级成明文存储**，并把"明文"这个词写进界面上的 `note` —— 不假装加密过。
+
+#### 10.4 离线脚本上游的定位
+
+脚本上游（以及自检里那个假 SSE 上游）**只活在自检路径上**：
+Web 壳的 `?selfcheck=1`、Electron 壳的 `--selfcheck`、鸿蒙壳的 `--ps upstreamUrl …`。
+它不是产品路径的一部分，也不参与任何性能口径。
+
+一条硬规矩：**UI 必须如实标出当前是哪个上游。**
+Web 壳的角标写的是「上游：脚本（离线可跑，**不是真上游**）」，
+Electron 壳报 `upstream.kind`，鸿蒙壳的自检面板打出 `upstream=<地址>`。
+理由和"未打包形态必须报 error 而不是永远转圈"是同一条：
+**离线能跑 ≠ 连上了真上游**，把这两件事混起来，整套自检的可信度就没了。
+
+三个壳的假上游说**同一套场景词表**（正常 / 干净 EOF / socket 销毁 / 上游 error /
+中途 abort）。Web 与鸿蒙的宿主脚本共用一份实现
+（`scripts/fake-navigate-upstream.mjs`）—— 抄两份的话词表会有两个版本，
+而漂移的症状是"这个场景不存在（400）"，看起来像客户端的问题。
+Electron 那份仍在主进程内（它要跟着 main 一起打包），是**约定一致**而不是同一份代码。
+
+> **一处悬案**：上游会在 `sources` 事件里给引用来源，三端都**收得到**，
+> 但 `contract` 的 `AgentStreamEvent` 里没有对应的事件类型 ——
+> 所以现在只能上报 + 计数（诊断里有 `sources×N`），送不到 UI。
+> 要真正显示引用列表，得先给契约加一种事件类型。
 
 ---
 
@@ -777,7 +953,7 @@ Electron 列来自自检报告的 `systemInfo.capabilities`，鸿蒙列来自模
       对着真实静态 feed 跑完 `checking → available → downloading → ready`
 - [ ] **M5(b)** — mac / linux 产物（尽力）——计划里排在取舍顺序最后
 - [x] **M5(c)** — 性能量化：`perf:sample` 通道 + 六项实测指标
-      （冷启动 / 主进程内存 / 渲染进程内存 / 首 token 延迟 / 流式帧率 / 安装包体积），
+      （冷启动 / 主进程内存 / 渲染进程内存 / 本地首帧延迟 / 流式帧率 / 安装包体积），
       报告见 `docs/perf.md`
 - [x] **M6-0** — ArkTS 消费 contract 的 spike：结论是**可直接复用**，
       代价是 `.ts` 形态 + 一处 `in` 窄化 + 一次显式接缝（见「为什么 ArkTS 需要一次显式接缝」）

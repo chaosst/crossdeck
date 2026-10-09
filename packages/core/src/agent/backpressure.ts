@@ -46,7 +46,13 @@ export const BACKPRESSURE_DEFAULTS: BackpressureConfig = {
 export interface DrainingSummary {
   /** 因消费端跟不上而合并中间态的次数。正常恒为 0。 */
   readonly mergedChunks: number;
-  /** 首 token 延迟；上游一个字都没产出时为 undefined */
+  /**
+   * **本地首帧延迟**：`start()` → 本泵第一次吐出一帧。
+   *
+   * ⚠️ 它**不是**端到端首 token 延迟 —— 起点时上游可能一个字都还没产出。
+   * 接脚本上游（12ms 产 / 16ms 取）时它约 28ms，量的是**本泵的调度开销**。
+   * 上游一个字都没产出时为 undefined。
+   */
   readonly ttftMs: number | undefined;
   /** 从上游接收到的总字符数（合并**不会**减少它） */
   readonly acceptedChars: number;
@@ -109,7 +115,7 @@ export class BackpressurePump {
    * 上游喂入一段文本。
    *
    * 刻意设计成**增量**接口：真实 LLM 的流式响应可以直接逐 token 喂进来，
-   * 不必等全文就绪 —— 等全文再喂会把首 token 延迟拉到最差。
+   * 不必等全文就绪 —— 等全文再喂会把首帧延迟拉到最差。
    */
   push(text: string): void {
     if (this.#finished || text.length === 0) return;

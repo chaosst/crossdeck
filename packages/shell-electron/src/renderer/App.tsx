@@ -788,16 +788,18 @@ export default function App() {
                 data-len={streamText.length}
                 className="mt-3 min-h-[88px] whitespace-pre-wrap rounded border border-[#e5e2da] bg-[#faf9f6] p-3 font-mono text-[12px] leading-relaxed text-[#33302b]"
               >
-                {streamText || (runningRunId ? '等待首个 token…' : '(尚未发送)')}
+                {streamText || (runningRunId ? '等待首帧…' : '(尚未发送)')}
               </pre>
               <div className="mt-2 flex items-center gap-4 text-[11px] text-[#8a857c]">
                 <span data-testid="stream-stage" data-stage={streamStage}>
                   状态：{runningRunId ? (paused ? '已暂停（背压中）' : '流式中') : '空闲'}
                 </span>
                 {usage && (
+                  // ⚠️ 标签是「字符」不是「token」：上游不返回 usage，这两个数装的是
+                  // 文本长度。见 `contract/src/stream.ts` 的 `Usage`。
                   <span>
-                    首 token {usage.ttftMs ?? '?'}ms · 共 {usage.totalMs}ms ·{' '}
-                    {usage.completionTokens} token
+                    首帧 {usage.ttftMs ?? '?'}ms · 共 {usage.totalMs}ms ·{' '}
+                    {usage.completionTokens} 字符
                     {usage.mergedChunks !== undefined && usage.mergedChunks > 0 && (
                       <> · 合并 {usage.mergedChunks} 次</>
                     )}
@@ -1011,12 +1013,18 @@ function perfRows(
     },
   ];
 
-  // 首 token 延迟不进 PerfSnapshot：它是一次 run 的属性（usage），不是进程的属性。
+  // 首帧延迟不进 PerfSnapshot：它是一次 run 的属性（usage），不是进程的属性。
   // 但报告要的 6 项指标里有它，所以在这里并进来。
+  //
+  // ⚠️ 标签是「本地首帧延迟」而不是「流式首 token 延迟」：`ttftMs` 量的是
+  //    run 开始 → 泵第一次吐帧，**不含上游首 token**。接脚本上游时它约等于
+  //    produceIntervalMs + flushIntervalMs（12+16≈28ms）；接真实上游后它会被
+  //    上游主导，那时这个"小于 300ms"的目标就不再是在量本项目。理由与代价见
+  //    README §8 与 `docs/perf.md`。
   if (ttftMs !== null) {
     rows.splice(3, 0, {
       metric: 'streamTtftMs',
-      label: '流式首 token 延迟',
+      label: '本地首帧延迟（不含上游）',
       actual: `${ttftMs} ms`,
       target: `< ${PERF_TARGETS.streamTtftMs} ms`,
       ok: meetsTarget('streamTtftMs', ttftMs),

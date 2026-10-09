@@ -353,7 +353,7 @@ if (m6.verdicts === null) {
       `    renderer ${mb(m6.rendererRssBytes)} ${icon(v.rendererRssBytes)}`,
   );
   console.log(
-    `    首token ${String(m6.streamTtftMs)}ms ${icon(v.streamTtftMs)}` +
+    `    本地首帧 ${String(m6.streamTtftMs)}ms ${icon(v.streamTtftMs)}` +
       `    帧率 ${String(m6.streamFps)}fps ${icon(v.streamFps)}` +
       `    安装包 ${mb(m6.installerBytes)} ${icon(v.installerBytes)}`,
   );
