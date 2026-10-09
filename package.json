@@ -34,7 +34,8 @@
     "verify:navigate-client-ohos": "node scripts/verify-navigate-client-ohos.mjs",
     "verify:navigate-auth": "node scripts/verify-navigate-auth.mjs",
     "verify:shared-fresh": "node scripts/verify-shared-fresh.mjs",
-    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:sse && pnpm verify:model && pnpm verify:agent && pnpm verify:update && pnpm verify:navigate-client && pnpm verify:navigate-client-ohos && pnpm verify:navigate-auth && pnpm verify:shared-fresh",
+    "verify:ohos-judge": "node packages/shell-ohos/scripts/verify-ohos-judge.mjs",
+    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:sse && pnpm verify:model && pnpm verify:agent && pnpm verify:update && pnpm verify:navigate-client && pnpm verify:navigate-client-ohos && pnpm verify:navigate-auth && pnpm verify:shared-fresh && pnpm verify:ohos-judge",
     "verify:update-feed": "pnpm --filter @crossdeck/shell-electron verify:update-feed",
     "sync:ohos": "node packages/shell-ohos/scripts/sync-shared.mjs",
     "verify:ohos": "node packages/shell-ohos/scripts/verify-ohos.mjs"

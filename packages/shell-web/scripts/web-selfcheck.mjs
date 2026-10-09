@@ -51,6 +51,8 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// 假上游与鸿蒙壳的验证脚本**共用一份**（见该文件头部）。
+import { createFakeNavigateUpstream } from '../../../scripts/fake-navigate-upstream.mjs';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
@@ -86,235 +88,19 @@ const MIME = {
 // ─────────────────────────────────────────────────────────────
 // ① 假 navigate 上游 —— 与静态站点**同一个服务器**
 //
-// 为什么必须同源：Web 壳的凭据是**同源 httpOnly cookie**，而同源是唯一被支持的
+// 实现搬到了 `scripts/fake-navigate-upstream.mjs`：鸿蒙壳的验证脚本（T14）要在
+// **宿主侧**起同一个假上游，两边共用一份才不会长出两套场景词表（词表一漂移，
+// 症状是这个场景不存在（400），看起来像客户端的问题）。
+//
+// 为什么必须**同源**：Web 壳的凭据是同源 httpOnly cookie，而同源是唯一被支持的
 // 部署形态（跨源既被 CORS 挡、又带不上 cookie）。换一个端口就是跨源 ——
-// 那测出来的不是这个壳真实会走的那条路，而是"一个更方便的上游"。
+// 那测出来的不是这个壳真实会走的那条路，而是一个更方便的上游。
 //
 // 场景词表由 `GET /__selfcheck/nav-fixture` **下发给页面**：页面不硬编码任何一个
 // 字符串。词表漂移时页面根本拿不到 fixture，自检当场红 —— 不可能静默通过。
 //
-// 场景名与 Electron 壳那份（`shell-electron/src/main/fakeNavigateUpstream.ts`）
-// 保持一致：两端的假上游说同一套话，将来换成同一个真上游时口径不用二次对齐。
-//
 // ⚠️ 只在 `?selfcheck=1` 这条路径上被用到，不属于任何用户路径。
 // ─────────────────────────────────────────────────────────────
-const NAV_SCENARIO_PROMPTS = {
-  normal: 'selfcheck:navigate-normal',
-  'silent-close': 'selfcheck:navigate-close',
-  killed: 'selfcheck:navigate-killed',
-  'upstream-error': 'selfcheck:navigate-error',
-  abort: 'selfcheck:navigate-abort',
-};
-const NAV_NORMAL_CHUNKS = ['SELF', 'CHECK-', 'NAV', 'IGATE-', 'OK!!'];
-
-/**
- * `chatPath` / `doneLiteral` 由调用方从 **core 的真实产物** 注入（而不是在这里
- * 再抄一遍 `'/api/resume/chat'`）—— 抄一份就等于给"协议漂移"留了一条静默通道。
- */
-function createFakeNavigate({ chatPath, doneLiteral }) {
-  const liveTokens = new Set();
-  const timers = new Set();
-  let seq = 0;
-  const stats = { logins: 0, frames: {}, ended: [], doneSent: [], clientGone: [], unknown: [] };
-
-  const json = (res, status, payload) => {
-    res.statusCode = status;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(payload));
-  };
-
-  const cookieToken = (req) => {
-    for (const part of String(req.headers.cookie ?? '').split(';')) {
-      const eq = part.indexOf('=');
-      if (eq < 0) continue;
-      if (part.slice(0, eq).trim() === 'navigate_session') return part.slice(eq + 1).trim();
-    }
-    return null;
-  };
-
-  const readBody = async (req) => {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    return Buffer.concat(chunks).toString('utf8');
-  };
-
-  const openSse = (res) => {
-    res.statusCode = 200;
-    res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-    res.setHeader('cache-control', 'no-cache');
-    res.setHeader('connection', 'keep-alive');
-    // `flushHeaders()` 不能省：不 flush 的话浏览器要等服务端攒够一定字节才收到首字节，
-    // 于是"逐帧到达"会退化成"一次性到齐"，首帧超时也会假触发。
-    res.flushHeaders();
-  };
-
-  const scenarioFor = (question) => {
-    for (const [name, prompt] of Object.entries(NAV_SCENARIO_PROMPTS)) {
-      if (prompt === question) return name;
-    }
-    return null;
-  };
-
-  const streamScenario = (scenario, res) => {
-    openSse(res);
-    stats.frames[scenario] = 0;
-
-    let stopped = false;
-    let timer = null;
-    /**
-     * 服务端**自己**掐断（killed 场景）时要置位。
-     *
-     * 不然 `close` 那一判会把"我把它杀了"也算成"客户端跑了" ——
-     * 于是 `clientGone` 里混进一个假条目，而它正是 abort 那条断言**唯一**的证据来源。
-     * 测量本身不干净，结论就没法信。
-     */
-    let killedByUs = false;
-
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      if (timer !== null) {
-        clearInterval(timer);
-        timers.delete(timer);
-      }
-    };
-
-    // 「客户端断开了吗」的判据是 `close` 且**没写过 end** 且**不是我们自己杀的** ——
-    // 正常写完也会 close，单看 close 会把每个正常请求都算成断开。
-    res.on('close', () => {
-      if (!res.writableEnded && !killedByUs && !stats.clientGone.includes(scenario)) {
-        stats.clientGone.push(scenario);
-      }
-      stop();
-    });
-
-    const frame = (event, data) => {
-      res.write(`event: ${event}\ndata: ${data}\n\n`);
-      if (event === 'token') stats.frames[scenario] = (stats.frames[scenario] ?? 0) + 1;
-      if (event === 'done') stats.doneSent.push(scenario);
-    };
-
-    if (scenario === 'abort') {
-      // 慢慢滴：给客户端留出"中途点停止"的时间窗。停不下来（= 没断连）时本定时器会一直跑，
-      // 由收尾的 `close()` 兜住 —— 所以下面每一拍都先自查 `stopped`。
-      timer = setInterval(() => {
-        if (stopped || res.writableEnded || res.destroyed) return stop();
-        frame('token', JSON.stringify('滴'));
-      }, 60);
-      timers.add(timer);
-      return;
-    }
-
-    let i = 0;
-    timer = setInterval(() => {
-      if (stopped || res.writableEnded || res.destroyed) return stop();
-
-      if (i < NAV_NORMAL_CHUNKS.length) {
-        frame('token', JSON.stringify(NAV_NORMAL_CHUNKS[i]));
-        i += 1;
-        return;
-      }
-
-      stop();
-      switch (scenario) {
-        case 'normal':
-          frame('done', doneLiteral);
-          stats.ended.push(scenario);
-          res.end();
-          return;
-        case 'upstream-error':
-          frame('error', JSON.stringify('SELFCHECK：上游故意报错'));
-          stats.ended.push(scenario);
-          res.end();
-          return;
-        case 'silent-close':
-          // 干净 EOF，**不发 done** —— 客户端应据此判"被截断"。
-          stats.ended.push(scenario);
-          res.end();
-          return;
-        case 'killed':
-          // 粗暴断开：客户端读到的是**流错误**，不是 EOF。两条路必须都覆盖。
-          // 置位再 destroy —— 这是**我们**杀的，不是客户端跑的（见 killedByUs 的说明）。
-          killedByUs = true;
-          res.destroy();
-          return;
-        default:
-          return;
-      }
-    }, 20);
-    timers.add(timer);
-  };
-
-  const fixture = {
-    chatPath,
-    scenarios: NAV_SCENARIO_PROMPTS,
-    normalChunks: NAV_NORMAL_CHUNKS,
-    normalText: NAV_NORMAL_CHUNKS.join(''),
-    /** 一个必然不被认识的场景名 —— 页面拿它做反例（证明前面的场景是"被认出来"的）。 */
-    unknownPrompt: 'selfcheck:navigate-not-a-scenario',
-  };
-
-  const handle = async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://fake');
-
-    if (req.method === 'GET' && url.pathname === '/__selfcheck/nav-fixture') {
-      json(res, 200, fixture);
-      return true;
-    }
-    if (req.method === 'GET' && url.pathname === '/__selfcheck/nav-stats') {
-      json(res, 200, stats);
-      return true;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/login/guest') {
-      seq += 1;
-      const token = `selfcheck-cookie-${seq}`;
-      liveTokens.add(token);
-      stats.logins += 1;
-      // 真上游的凭据是 httpOnly cookie，同时响应体里也回一份 token（照抄真形状）。
-      res.setHeader('set-cookie', `navigate_session=${token}; Path=/; HttpOnly; SameSite=Lax`);
-      json(res, 200, { token, role: 'guest', expiresIn: 1800, next: '/' });
-      return true;
-    }
-    if (req.method === 'POST' && url.pathname === chatPath) {
-      const token = cookieToken(req);
-      // 与真上游同一条闸门：没有有效 cookie 就是 401。
-      // 页面靠它验证"未登录 / 已登录"这条反向路径确实被上游鉴权挡住。
-      if (token === null || !liveTokens.has(token)) {
-        json(res, 401, { error: 'unauthorized' });
-        return true;
-      }
-
-      let question = '';
-      try {
-        const parsed = JSON.parse(await readBody(req));
-        if (parsed !== null && typeof parsed === 'object' && 'question' in parsed) {
-          question = String(parsed.question);
-        }
-      } catch {
-        // body 不是 JSON 就当空 question —— 下面按"不认识的场景"回 400。
-      }
-
-      const scenario = scenarioFor(question);
-      if (scenario === null) {
-        if (!stats.unknown.includes(question)) stats.unknown.push(question);
-        json(res, 400, { error: `自检假上游不认识这个场景：${question}` });
-        return true;
-      }
-      streamScenario(scenario, res);
-      return true;
-    }
-    return false;
-  };
-
-  return {
-    stats,
-    handle,
-    close: () => {
-      for (const t of timers) clearInterval(t);
-      timers.clear();
-    },
-  };
-}
 
 // ─────────────────────────────────────────────────────────────
 // ② 静态服务器（127.0.0.1 是"潜在可信来源"，OPFS 需要安全上下文）
@@ -461,9 +247,11 @@ async function main() {
   }
   const core = await import(pathToFileURL(coreEntry).href);
 
-  const fake = createFakeNavigate({
+  const fake = createFakeNavigateUpstream({
     chatPath: core.NAVIGATE_CHAT_PATH,
     doneLiteral: core.NAVIGATE_DONE_LITERAL,
+    // Web 壳的凭据是同源 httpOnly cookie —— 不是开关，是壳之间真实存在的差异。
+    auth: 'cookie',
   });
   const { server, port } = await startStaticServer(fake);
   const url = `http://127.0.0.1:${port}/?selfcheck=1`;
