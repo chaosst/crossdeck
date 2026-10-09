@@ -1,25 +1,13 @@
 /**
  * navigate 上游的 **HTTP/SSE IO 实现** —— Web 壳这一份。
  *
- * ══════════════════════════════════════════════════════════════════
- * 与 Electron 壳的差别**只有两行**，而且是有意的
- * ══════════════════════════════════════════════════════════════════
- *   1. **认证**：浏览器里凭据是**同源 httpOnly cookie**，由浏览器自动带上 ——
- *      所以 `credentials: 'same-origin'`，**不往 URL 上塞 token**。
- *      （Electron 主进程没有 cookie jar，只能 `?token=`。）
- *   2. 出错时说"地址不对"的措辞。
+ * 与 Electron 壳的差别只有认证：浏览器里凭据是**同源 httpOnly cookie**，由浏览器自动
+ * 带上（`credentials: 'same-origin'`），**不往 URL 塞 token**，也**不落地任何凭据**。
+ * 其余全在 `core/net/navigateStream.ts`。
  *
- * 其余（首帧超时、SSE 解析、帧 → 语义动作、权威全文差量、终态幂等、取消记账）
- * 全在 `core/net/navigateStream.ts`，一行不用重写。
- *
- * ⚠️ **不落地任何凭据**：没有 tokenStore。往 `localStorage` 存 token
- *    等于把它送给任何一个 XSS —— 而 httpOnly cookie 拿不到。
- *
- * ⚠️ **为什么必须同源**（T8 的前置决策，走 A：反代，不动服务端）：
- *    T3 实测 navigate 响应头里**没有任何 `access-control-*`** → 跨源 fetch 会被
- *    浏览器挡掉；且登录 cookie 是 `HttpOnly` + `SameSite=Lax` → **跨站根本不带**。
- *    所以 Web 壳的产物要么放进 navigate 的 `public/`，要么由 Caddy 同域反代。
- *    在 dev/自检里，`baseUrl` 必须与 navigate 同 host:port，否则跑的是跨域路径（假绿）。
+ * ⚠️ **同源是唯一支持的部署形态**：navigate 响应头里没有 `access-control-*`，
+ *    登录 cookie 又是 `HttpOnly` + `SameSite=Lax` → 跨源既被挡又带不上 cookie。
+ *    所以产物要么放进 navigate 的 `public/`，要么由 Caddy 同域反代。
  */
 
 import {
@@ -40,15 +28,11 @@ import type {
 
 export interface WebNavigateClientConfig {
   /**
-   * 上游地址前缀。**同源部署时留空** —— 于是打的是相对路径
-   * （`/api/resume/chat`），浏览器按当前 origin 解析，cookie 自然带上。
-   * 传绝对地址只在"确实做了跨域且服务端开了 CORS + `SameSite=None; Secure`"时成立。
+   * 上游地址前缀。**同源部署时留空** —— 于是打相对路径，浏览器按当前 origin 解析，
+   * cookie 自然带上。给绝对地址只在"真做了跨域且服务端开了 CORS + `SameSite=None; Secure`"时成立。
    */
   readonly baseUrl?: string;
-  /**
-   * 首帧超时（ms）。**必须有** —— 没有它，"上游没起来 / 反代没配好"
-   * 会表现为界面永远转圈，而这恰恰是本地最常撞的那一类失败。
-   */
+  /** 首帧超时（ms）。**必须有** —— 没有它，"上游没起来 / 反代没配好"会表现为永远转圈。 */
   readonly firstFrameTimeoutMs: number;
   readonly deps: AgentDeps;
   /** 诊断出口。不给就落 console。 */

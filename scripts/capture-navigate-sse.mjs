@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * capture-navigate-sse.mjs —— navigate `/api/resume/chat` 真实 SSE 语料录制器（T3 交付物）
+ * capture-navigate-sse.mjs —— navigate `/api/resume/chat` 真实 SSE 语料录制器
  *
- * 为什么要有它：T4/T5 是 SSE 解析器与事件映射，它们的"契约"不是一份手写文档，
+ * 为什么要有它： SSE 解析器与事件映射，它们的"契约"不是一份手写文档，
  * 而是**真实字节流**。手写契约会随 navigate 漂移，录下来的字节不会。
  *
  * 设计要点（每条都对应一个已知的踩坑）：
@@ -84,7 +84,7 @@ function request(pathWithQuery, { method = "POST", headers = {}, body } = {}) {
 /**
  * 从原始文本里抽出 `event:` / `data:` 帧序列（**仅用于元数据里的顺序摘要**）。
  * 注意：这是"事后解析"，raw 文件里仍然保留原始字节 —— 两者互不替代。
- * 这里刻意写得"笨"（按 \n\n 切），因为 T4 才负责处理跨 chunk 半帧；
+ * 这里刻意写得"笨"（按 \n\n 切），跨 chunk 半帧由解析器负责；
  * 本函数拿到的是已拼好的全量文本。
  */
 function summarizeFrames(rawText) {

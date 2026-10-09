@@ -8,17 +8,13 @@ import type { ModelPort, ModelToolCall } from './model.js';
 import { ToolRegistry, echoTool } from './tools.js';
 
 /**
- * 断流兜底守卫的默认参数（**运行时半边**；另一半在壳的 HTTP 实现里，见计划 T6-b）。
+ * 断流兜底守卫的默认参数。
  *
- * 上游既没说结束也没报错就断了 → 仍必须收尾出一个终态，
- * 否则失败模式是"token 全到齐、UI 永远转圈"。
+ * 上游既没说结束也没报错就断了 → 仍必须收尾出一个终态，否则表现为"token 全到齐、
+ * UI 永远转圈"。`stream()` 是同步返回的，runtime 只能靠"多久没动静"来猜 ——
+ * 真正的断流信号在壳那一半（关流 / 首帧超时时主动调 `sink.onError`）。两半都要有。
  *
- * ⚠️ 只有一半兜不住全部：`stream()` 是**同步返回**的，上游不发回调它也不会"抛" ——
- * runtime 只能靠"多久没动静"来猜。真正的断流信号在壳那一半
- * （HTTP 实现要在关流 / 首帧超时时主动调 `sink.onError`）。两半都要有。
- *
- * 超时取 60s 是**刻意保守**：这是粗粒度后备，宁可晚发现，也不要误杀
- * 上游正常的"思考停顿"（工具调用期间可能长时间没有 onChunk）。
+ * 60s 是刻意保守：这是粗粒度后备，宁可晚发现，也不要误杀上游正常的"思考停顿"。
  */
 export const STALL_GUARD_DEFAULTS = {
   /** 多久查一次"还有没有进展"（用注入的 `every`，不许 setTimeout） */
@@ -30,16 +26,12 @@ export const STALL_GUARD_DEFAULTS = {
 /**
  * Agent 运行时 —— 一次 run 的完整生命周期。
  *
- * 它替换了 M3 里那个写在壳里的 `runScripted()`。区别不是"代码搬到哪了"，
- * 而是搬完之后**这些约束第一次可以被断言**：
+ * 搬进 core 的收益是**这些约束第一次可以被断言**：一个 run 恰好一个终态事件；
+ * 背压算法不绑真实定时器，可逐帧确定性验证；工具失败是 `tool_end.ok = false`
+ * 而不是把 run 打挂；事件分发与传输彻底分开。
  *
- *   · 一个 run **恰好**一个终态事件（重复收尾会被挡住）
- *   · 背压算法不再绑定真实定时器，可以逐帧确定性验证
- *   · 工具失败的语义是 `tool_end.ok = false`，而不是把整个 run 打挂
- *   · 事件分发（谁在听、退订后还收不收）与传输（怎么过 IPC）彻底分开
- *
- * 壳那一侧因此只剩三行适配：`setInterval` → `every`、`Date.now` → `now`、
- * `bus.subscribe` → `webContents.send`。三端壳的这三行几乎一样。
+ * 壳那侧只剩三行适配：`setInterval` → `every`、`Date.now` → `now`、
+ * `bus.subscribe` → `webContents.send`。
  */
 
 export type TerminalEvent = Extract<AgentStreamEvent, { type: 'done' | 'error' }>;
@@ -68,7 +60,7 @@ interface ActiveRun {
   settled: boolean;
   /** 上游取消函数（`model.stream()` 同步返回的那个）—— abort 时真的调它 */
   cancel: Cancel | null;
-  /** 断流兜底守卫的摘除函数 —— 收尾时必须调，否则会留下一个永不停的定时器 */
+  /** 断流兜底守卫的摘除函数 —— 收尾时必须调，否则留下一个永不停的定时器 */
   guard: Cancel | null;
 }
 
@@ -119,10 +111,8 @@ export class AgentRuntime {
     };
     this.#runs.set(runId, run);
 
-    // `start` 必须**同步**发出去，不能等到第一个 await 之后。
-    // 调用方（IPC handler）拿到 runId 返回给渲染进程时，
-    // 渲染进程那边的订阅就该已经见过 start 了 —— 否则会漏掉首个事件，
-    // 也就是"订阅晚于派发"这个经典竞态。
+    // `start` 必须**同步**发出去：调用方拿到 runId 返回给渲染进程时，
+    // 渲染进程的订阅就该已经见过 start 了，否则会漏掉首个事件（订阅晚于派发的经典竞态）。
     this.#bus.publish({ type: 'start', runId, at: run.startedAt });
 
     void this.#drive(run);
@@ -132,9 +122,8 @@ export class AgentRuntime {
   /**
    * 反向流控。
    *
-   * @returns false 表示该 run 不存在或已终结 —— 调用方应当把它当 NOT_FOUND 抛出去。
-   *   **不要**静默返回成功：那会让 renderer 以为"暂停生效了"，
-   *   而实际上那个 run 早就结束，UI 状态与真实状态不一致。
+   * @returns false = 该 run 不存在或已终结，调用方应当把它当 NOT_FOUND 抛出去。
+   *   **不要**静默返回成功：那会让 renderer 以为"暂停生效了"，而 run 早就结束了。
    */
   pause(runId: string): boolean {
     const run = this.#runs.get(runId);
@@ -158,23 +147,18 @@ export class AgentRuntime {
     const run = this.#runs.get(runId);
     if (run === undefined || run.settled) return false;
     run.aborted = true;
-    // 断上游（真的断连接）由 `#settle` 这个**单一出口**统一做 ——
-    // 所有终态路径都必须释放上游，兜底守卫那条尤其重要：
-    // 它是在"上游还挂着"的情况下强行收尾的，不 cancel 就把连接晾在那儿了。
+    // 断上游由 `#settle` 这个**单一出口**统一做 —— 所有终态路径都必须释放上游。
     this.#settle(run, { type: 'error', runId, code: 'ABORTED', message: '已被用户中断' });
     return true;
   }
 
   /**
-   * 会话被删 / 窗口关闭时调用，避免调度泄漏。
-   *
-   * 刻意**不发**终态事件：走到这里说明接收方正在消失，
-   * 往一个已经关掉的 webContents 发事件只会浪费一次序列化。
+   * 会话被删 / 窗口关闭时调用，避免调度泄漏。刻意**不发**终态事件：
+   * 走到这里说明接收方正在消失，往已经关掉的 webContents 发事件只是浪费一次序列化。
    */
   stopAll(): void {
     for (const run of this.#runs.values()) {
-      // 三样都要摘：上游（定时器 / HTTP 连接）、泵、断流守卫。
-      // 少摘上游就会留下一个永不停的定时器 —— 这正是本方法存在的意义（"避免调度泄漏"）。
+      // 三样都要摘：上游（定时器 / HTTP 连接）、泵、断流守卫。少摘上游就留下永不停的定时器。
       run.cancel?.();
       run.pump?.stop();
       run.guard?.();
@@ -187,9 +171,8 @@ export class AgentRuntime {
   }
 
   /**
-   * 终态之后仍被投递的事件数 —— 应当恒为 0。
-   * 非 0 说明有调度没摘干净（定时器泄漏），而且它**不会**表现为崩溃，
-   * 只会表现为"偶尔多收到一个 token"，所以必须有地方把它记下来。
+   * 终态之后仍被投递的事件数 —— 应当恒为 0。非 0 说明有调度没摘干净（定时器泄漏），
+   * 而它**不会**表现为崩溃，只会表现为"偶尔多收到一个 token"，所以必须有地方记下来。
    */
   get droppedAfterTerminal(): number {
     return this.#droppedAfterTerminal;
@@ -239,19 +222,17 @@ export class AgentRuntime {
           },
           onError: (message: string) => {
             ended = true;
-            // 上游报错 ≠ 用户中断，不能用 ABORTED ——
-            // 那会让 UI 把"服务器 500"显示成"你取消了"。
+            // 上游报错 ≠ 用户中断：用 ABORTED 会让 UI 把"服务器 500"显示成"你取消了"。
             this.#settle(run, { type: 'error', runId: run.runId, code: 'UPSTREAM', message });
           },
         },
       );
 
-      // ── 断流兜底守卫（**运行时半边**；壳那半由 HTTP 实现在关流/首帧超时时调 onError）──
+      // ── 断流兜底守卫 ──
       // 判据：既没 onEnd 也没 onError，且 onChunk / onToolCall 也停了 → 主动收尾。
-      // ⚠️ 极性要害：是"**还没**表态"才兜底。
-      //    写成 `if (!ended) return` 就是把判据反了过来 ——
-      //    变成"正常结束之后"才触发，去和 drained 抢终态（把 done 压成 error ABORTED
-      //    并丢掉队列里最后一段），而真正该管的静默断流一个都兜不到（UI 永远转圈）。
+      // ⚠️ 极性要害：是"**还没**表态"才兜底。写成 `if (!ended) return` 就反了 ——
+      //    变成正常结束之后才触发，去和 drained 抢终态（把 done 压成 error ABORTED
+      //    并丢掉队列最后一段），而真正该管的静默断流一个都兜不到。
       const guard = STALL_GUARD_DEFAULTS;
       run.guard = this.#deps.every(guard.checkIntervalMs, () => {
         if (ended || run.settled) return;
@@ -264,17 +245,14 @@ export class AgentRuntime {
         });
       });
 
-      // 上游可能在 `stream()` 里就**同步**调了 onError（例如"参数校验失败立刻报错"）。
-      // 那种情况下上面的 `#settle` 已经跑完了，而守卫是**后**注册的 —— 它错过了
-      // `#settle` 里的那次摘除，会变成一个永不停的定时器（不崩不报错，只是泄漏）。
-      // 所以注册完必须自查一次。
+      // 上游可能在 `stream()` 里就**同步**调了 onError —— 那时上面的 `#settle` 已经跑完，
+      // 而守卫是**后**注册的，会错过 `#settle` 里的摘除，变成一个永不停的定时器。
       if (run.settled) {
         run.guard();
         run.guard = null;
       }
     } catch (err) {
-      // 上游挂了是**一次 run 的失败**，不是进程的失败 ——
-      // 必须走 error 事件让 UI 显性化，而不是让这个 Promise 静默 rejection。
+      // 上游挂了是一次 run 的失败，不是进程的失败 —— 走 error 事件，别让 Promise 静默 rejection。
       if (!run.settled) {
         this.#settle(run, {
           type: 'error',
@@ -302,8 +280,7 @@ export class AgentRuntime {
     const ms = this.#deps.now() - startedAt;
 
     this.#emit(run, { type: 'tool_end', runId: run.runId, callId, ok: result.ok, ms });
-    // 工具输出**不**直接塞进下行文本：那是模型的职责（它要决定怎么表述）。
-    // 内核只负责把结果作为事件如实报出去。
+    // 工具输出**不**直接塞进下行文本：那是模型的职责。内核只把结果作为事件如实报出去。
   }
 
   #emit(run: ActiveRun, event: AgentStreamEvent): void {
@@ -317,11 +294,8 @@ export class AgentRuntime {
   #settle(run: ActiveRun, terminal: TerminalEvent): boolean {
     if (run.settled) return false;
     run.settled = true;
-    // 一个 run 走到终态时，"三样调度"都必须收干净，一个都不能漏：
-    //   ① 上游（HTTP 连接 / 它的定时器）—— 最容易漏，兜底守卫那条路径尤其明显
-    //   ② 背压泵（produce / flush 两个定时器）
-    //   ③ 断流守卫（deps.every 注册的检查循环）
-    // 漏掉任何一个都不崩不报错，只表现为"收尾后还在空转"，很难被发现。
+    // 走到终态时三样调度都必须收干净：上游（HTTP 连接 / 它自己的定时器）、
+    // 背压泵、断流守卫。漏掉任何一个都不崩不报错，只表现为"收尾后还在空转"，很难发现。
     run.cancel?.();
     run.pump?.stop();
     run.guard?.();

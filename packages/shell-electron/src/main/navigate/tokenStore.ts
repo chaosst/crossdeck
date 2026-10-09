@@ -1,17 +1,12 @@
 /**
  * navigate 凭据存储 —— Electron 壳。
  *
- * 单独一个文件（而不是塞进 client.ts）：**凭据与流无关**。
- * 混在一起之后，"换个存储方式"就会碰"怎么读流"的代码，反之亦然。
+ * 单独一个文件是因为**凭据与流无关**。两条硬规则：
+ *   ① 优先 `safeStorage`（DPAPI / Keychain）加密后落盘；
+ *   ② 加密不可用时**如实降级并标注**（`status().note`），**不许静默明文**。
  *
- * 两条硬规则：
- *   ① 优先 `safeStorage`（Windows/DPAPI、macOS/Keychain）加密后落盘。
- *   ② 加密不可用时**如实降级并标注**（`status().note` 会被 UI 读到）——
- *      **不许静默明文**。静默的明文凭据是最典型的那种"没报错，但已经错了"。
- *
- * ⚠️ 本文件 `import 'electron'`，所以**只能**在主进程加载。
- *    `navigate/client.ts` 刻意不 import electron，凭证由外部注入 ——
- *    这样 client 才可以在不带 Electron 的环境里被单独验证（见 scripts/verify-navigate-client.mjs）。
+ * ⚠️ 本文件 `import 'electron'`，只能在主进程加载；`navigate/client.ts` 刻意
+ *    不 import electron（凭据外部注入），所以 client 能不带 Electron 单独验证。
  */
 
 import { app, safeStorage } from 'electron';
@@ -28,7 +23,7 @@ interface Envelope {
 
 export interface TokenStoreStatus {
   readonly hasToken: boolean;
-  /** 是否**真的**加密落盘。`false` 时说明已诚实降级（见 `note`）。 */
+  /** 是否**真的**加密落盘。`false` = 已诚实降级（见 `note`）。 */
   readonly encrypted: boolean;
   /** 磁盘上是否真的有这份文件（内存里临时持有的 token 不算）。 */
   readonly persisted: boolean;

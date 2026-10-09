@@ -55,23 +55,19 @@ const deps: AgentDeps = {
 };
 
 // ─────────────────────────────────────────────────────────────
-// 上游选择（T8）—— 与 Electron 壳同一条决策：有地址就接 navigate，
-// 否则退回脚本上游。差别只在"地址从哪来"：
-//   · Electron 读环境变量（主进程才有 env）
-//   · Web 壳读 URL 参数（页面没有 env，而 URL 是页面唯一天然可配的东西）
+// 上游选择 —— 与 Electron 壳同一条决策，差别只在"地址从哪来"：
+// 页面没有 env，URL 参数是唯一天然可配的东西。
 //
 // `?upstream=1`（或 `?upstream=`）→ **同源**（打相对路径，cookie 自然带上）
-// `?upstream=/proxy` / `?upstream=https://host` → 指定前缀
-// 不给 → 脚本上游（离线自检仍然跑得动）
+// `?upstream=/proxy` / `?upstream=https://host` → 指定前缀；不给 → 脚本上游
 //
-// ⚠️ 同源是唯一被支持的部署形态（T8 前置决策走 A：Caddy 同域反代，不动服务端）。
-//    给绝对地址只在"真做了跨域且服务端开了 CORS + `SameSite=None; Secure`"时成立。
+// ⚠️ 同源是唯一被支持的部署形态（Caddy 同域反代，不动服务端）。
 // ─────────────────────────────────────────────────────────────
 const navigateBase = (() => {
   const params = new URLSearchParams(location.search);
   if (!params.has('upstream')) return null;
   const raw = params.get('upstream') ?? '';
-  // `?upstream=1` 是"打开同源"的旗标写法，别把它当成路径前缀
+  // `?upstream=1` 是"打开同源"的旗标写法，别把它当路径前缀
   return raw === '1' ? '' : raw;
 })();
 

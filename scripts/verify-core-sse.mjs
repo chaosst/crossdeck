@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * T4/T5 验收：SSE 帧解析 + navigate 事件映射。
+ * SSE 帧解析 + navigate 事件映射验收。
  *
  * 做法：**零依赖、无子进程**，直接加载 core 的**编译产物**
  *   （packages/core/dist/index.js）跑纯 Node 断言 —— 与 verify-core-scope.mjs 同法。
@@ -100,7 +100,7 @@ function parseSliced(text, width) {
 const eqFrames = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ═════════════════════════════════════════════════════════════
-console.log('\n── T4 · SSE 解析器 ──');
+console.log('\n── SSE 解析器 ──');
 // ═════════════════════════════════════════════════════════════
 
 // 用例 1：单帧完整
@@ -279,7 +279,7 @@ console.log('\n── T4 · SSE 解析器 ──');
   }
 }
 
-// 用例 16：真实语料驱动 —— 直接读 T3 录下来的原始字节
+// 用例 16：真实语料驱动 —— 直接读录制下来的原始字节
 {
   const { readFileSync } = await import('node:fs');
   const corpora = [
@@ -317,7 +317,7 @@ console.log('\n── T4 · SSE 解析器 ──');
 }
 
 // ═════════════════════════════════════════════════════════════
-console.log('\n── T5 · navigate 事件映射 ──');
+console.log('\n── navigate 事件映射 ──');
 // ═════════════════════════════════════════════════════════════
 
 /** 便捷：给定 event/data 直接映射 */

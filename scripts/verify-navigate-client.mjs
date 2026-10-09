@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * T7 + T8 验收：navigate 的 **IO 层**（两端各一份实现）。
+ * navigate **IO 层**验收（Electron / Web 两端各一份实现）。
  *
- *   T7 · Electron：`shell-electron/src/main/navigate/{client,model}.ts`
- *   T8 · Web     ：`shell-web/src/navigate/{client,model}.ts`
+ *   Electron：`shell-electron/src/main/navigate/{client,model}.ts`
+ *   Web     ：`shell-web/src/navigate/{client,model}.ts`
  *   共用         ：`core/src/net/navigateStream.ts`（壳无关状态机）＋
  *                  `core/src/net/chatClient.ts`（ChatClient 端口）
  *
- * 为什么需要这个脚本（而不是等 T12/T13 的自检）：
+ * 为什么需要这个脚本（而不是等壳自检）：
  *
  *   完成判据里有一半是**壳侧兜底**——「首帧超时」「静默关闭不许当正常收尾」
  *   「abort 要真断连接」。这三条在 UI 上表现为"界面转圈 / 少了半截答案"，
@@ -22,7 +22,7 @@
  *
  *   ⚠️ Web 那几段跑在 **Node 的 fetch** 上，不是浏览器 —— 所以它证明的是
  *      "我们发出去的请求形状对不对"，**不**证明"浏览器真的带上了 cookie"。
- *      后者只有真浏览器能验，归 `pnpm selfcheck:web`（T13 会补断言）。
+ *      后者只有真浏览器能验，归 `pnpm selfcheck:web`。
  *
  * 零依赖（除仓库自己的 esbuild devDependency）、**无子进程**：
  *   被测源码 import 的是 `@crossdeck/core`（指向 .ts 源码），裸 Node 加载不了，
@@ -90,7 +90,7 @@
  *
  * 结论：**24/24 全部杀死**（其中 M7、W7 是由"挂死/崩溃 → 退出码非 0"杀死的）。
  *
- * 历史（T7 单壳时代，14 发里 M13「首帧到了不摘计时器」首测真存活 0 条 ——
+ * 历史（只有 Electron 一份时，14 发里 M13「首帧到了不摘计时器」首测真存活 0 条 ——
  * 那才属于"测试没有鉴别力"，补场景 ⑫ 后杀死。别删 ⑫，否则会退回去）。
  */
 
@@ -311,7 +311,7 @@ function collect() {
 
 /**
  * 场景收尾的三条通用断言（几乎每个场景都要）：
- *   ① 恰好一个终态 —— 多一个就是 sink 契约被破了（T6-a 的 onEnd=2 就是这么来的）
+ *   ① 恰好一个终态 —— 多一个就是 sink 契约被破了（onEnd=2 那个 bug 就是这么来的）
  *   ② 没有残留定时器 —— 少摘一个就是"收尾后还在空转"
  *   ③ 等一下再说 —— 有些重复终态是**异步晚到**的，当场看不出
  */
@@ -343,13 +343,13 @@ const withWebClient = (deps, opts = {}) =>
     ...opts,
   });
 
-console.log('\n── T7 · 常量与配置 ─────────────────────────────');
-check('上游路径就是 T3 实测过的那个', NAVIGATE_CHAT_PATH === '/api/resume/chat', NAVIGATE_CHAT_PATH);
+console.log('\n── 常量与配置 ──────────────────────────────────');
+check('上游路径就是真上游实测过的那个', NAVIGATE_CHAT_PATH === '/api/resume/chat', NAVIGATE_CHAT_PATH);
 check('首帧超时默认 15s（不是"无限等"）', DEFAULT_FIRST_FRAME_TIMEOUT_MS === 15_000,
   String(DEFAULT_FIRST_FRAME_TIMEOUT_MS));
 
 // ═════════════════════════════════════════════════════════════
-console.log('\n── ① 请求形状与认证（T3 实测：Bearer 必 401）──');
+console.log('\n── ① 请求形状与认证（真上游实测：Bearer 必 401）──');
 // ═════════════════════════════════════════════════════════════
 {
   requests.length = 0;
@@ -373,7 +373,7 @@ console.log('\n── ① 请求形状与认证（T3 实测：Bearer 必 401）�
   check('① 方法是 POST', req.method === 'POST', String(req.method));
   const url = new URL(req.url, BASE_URL);
   check('① 路径是 /api/resume/chat', url.pathname === NAVIGATE_CHAT_PATH, url.pathname);
-  check('① token 走 ?token=（T3 实测可用的那条路）', url.searchParams.get('token') === 'TOKEN-abc',
+  check('① token 走 ?token=（真上游实测可用的那条路）', url.searchParams.get('token') === 'TOKEN-abc',
     String(url.searchParams.get('token')));
   // 反向断言：Bearer 必然 401。这条断言存在的意义是**防止有人"顺手改成标准写法"**。
   check('① 没有 Authorization 头（Bearer 必 401）', req.headers.authorization === undefined,
@@ -420,7 +420,7 @@ console.log('\n── ② 正常路径：逐帧 → done ──');
     diag.filter((d) => d.type === 'chunk').length === 2,
     JSON.stringify(diag.filter((d) => d.type === 'chunk')));
   const src = diag.find((d) => d.type === 'sources');
-  check('② sources 已去重（T3 实测上游有重复）',
+  check('② sources 已去重（真上游实测有重复）',
     src !== undefined && JSON.stringify(src.sources) === JSON.stringify(['a.md', 'b.md']),
     JSON.stringify(src));
   check('② sources **不拼进正文**', h.text() === '你好', h.text());
@@ -761,7 +761,7 @@ console.log('\n── ⑫ 首字节已到之后停住：**不许**误报"首帧�
   // 把摘除那行删掉照样全绿（变异存活 = 用例没有鉴别力）。
   // 而它并不是纯防御性代码 —— 少了它，"首字节到了、之后又被卡住"会被误报成
   // "首帧超时"，把一次**中途**卡顿说成**连都连不上**，排查方向会被带偏。
-  // 正确分工：壳只管"首帧"，中途卡顿交 runtime 的 60s 兜底（T6-b）。
+  // 正确分工：壳只管"首帧"，中途卡顿交 runtime 的 60s 兜底。
   handler = (_req, res) => {
     const w = sse(res);
     w.token('首帧');

@@ -1,26 +1,19 @@
 /**
  * @crossdeck/core —— 平台无关的 Agent 内核。
  *
- * 已落地：
- *   M0   — CapabilityPort 契约（ports.ts）
- *   M1   — SessionStore（首个真实模块，时钟与 id 均注入）
- *   M4   — fs/：WorkspaceStore（授权表 + 归属判定）与 PathGuard（scope 校验）
- *   M4.5 — events/：StreamBus（事件分发与退订）
- *          agent/：AgentRuntime（run 生命周期 + 工具链路）
- *                  BackpressurePump（产字↔推字解耦、帧对齐、合并中间态）
- *   nav  — net/：SseParser（SSE 文本帧解析）
- *                navigate.ts（navigate 上游帧 → 语义动作映射）
- *                navigateStream.ts（壳无关的流式会话状态机 + 诊断词汇）
- *                chatClient.ts（ChatClient 端口 —— T8 第二次出现时上提）
- *          —— 上游只有一份解析与映射，三端共用；IO 才是一端一份。
+ * 模块：
+ *   ports     平台能力契约
+ *   session   SessionStore（时钟与 id 均注入）
+ *   fs        WorkspaceStore / PathGuard / resolveInWorkspace
+ *   events    StreamBus（事件分发与退订）
+ *   agent     AgentRuntime / BackpressurePump / ModelPort / 工具链路
+ *   net       SseParser、navigate 帧映射、navigateStream（壳无关状态机）、ChatClient
+ *   update    版本比较 / 进度 / feed
  *
- * 铁律：本包**不得** import 任何平台 API（electron / node:* / @ohos.*）。
- * 由 `pnpm verify:core-purity` 强制检查，见 scripts/verify-core-purity.mjs。
- *
- * 另一条同样重要的约束：core 对 contract 只做 `import type`，
- * **零运行时依赖** —— 这让 core 的产物能被裸 Node 直接加载做单测
- * （见 scripts/verify-core-scope.mjs 与 verify-core-agent.mjs，
- * 不需要任何 TS 运行时，也**不需要任何真实定时器**）。
+ * 两条铁律：
+ *   ① **不得** import 任何平台 API（electron / node:* / @ohos.*），由 `pnpm verify:core-purity` 强制。
+ *   ② 对 contract 只做 `import type`、**零运行时依赖** —— 让 core 的产物能被裸 Node
+ *      直接加载做单测（`pnpm verify:core-scope`），且 contract/core 可被 ArkTS 直接消费。
  */
 
 export * from './ports.js';

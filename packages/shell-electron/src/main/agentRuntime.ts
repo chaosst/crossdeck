@@ -10,23 +10,12 @@ import { navigateTokenStore } from './navigate/tokenStore.js';
 /**
  * 壳侧的 Agent 适配器。
  *
- * M4.5 之前，这个文件里躺着整个 Agent 运行时（产字定时器、帧 flush、队列合并、
- * 暂停语义、事件推送）—— 全是平台无关的逻辑，却只能靠"跑一遍端到端、等几秒、
- * 看 token 数对不对"来验证。搬到 core 之后，那套算法现在由
- * `scripts/verify-core-agent.mjs` 用假调度器在 0ms 内逐帧验完（100 条断言）。
- *
- * 剩下真正属于 Electron 的只有四件事：
- *   1. `setInterval` → core 要的 `every`
- *   2. `Date.now`    → core 要的 `now`
- *   3. `bus.subscribe` → `webContents.send` —— 把事件送到**发起它的那个窗口**
- *   4. **选上游**（T7）：有地址就接 navigate，没地址就退回脚本上游 ——
- *      并把"当前是哪一个"如实暴露出去（`activeUpstream()`），不许假装在连真上游。
- * 前三条三端壳几乎一样，这正是分层的收益；第 4 条是各端各自的选择。
+ * 真正属于 Electron 的只有四件事：`setInterval` → `every`、`Date.now` → `now`、
+ * `bus.subscribe` → `webContents.send`（送到**发起它的那个窗口**）、以及**选上游**。
+ * 其余全在 core（由 `scripts/verify-core-agent.mjs` 用假调度器逐帧验完）。
  */
 
-// 提成变量：AgentRuntime 与 ScriptedModel **共用同一份 deps**。
-// 为什么必须共用：`ScriptedModel` 靠 `deps.every` 滴流，它的时钟必须与 runtime 的
-// 是同一个 —— 否则测试里注入的手动时钟只推进一半，滴流与 flush 的先后就不可控了。
+// 提成变量：AgentRuntime 与上游模型**共用同一份 deps** —— 否则注入的手动时钟只推进一半。
 const deps: AgentDeps = {
   now: () => Date.now(),
   every: (intervalMs, fn) => {
@@ -38,16 +27,11 @@ const deps: AgentDeps = {
 };
 
 /**
- * 上游地址 —— 没配就**退回脚本上游**。
+ * 上游地址 —— 没配就**退回脚本上游**（自检要能在没有网络时也跑通）。
+ * 但"离线可跑"和"假装在连真上游"是两回事，所以 `activeUpstream()` 会如实报出当前是哪个。
  *
- * 为什么必须保留 `ScriptedModel` 这条分支：自检要能在**没有网络**时也跑通。
- * 但"离线可跑"和"假装在连真上游"是两回事 —— 后者是诚实性缺口，
- * 所以 `activeUpstream()` 会如实报出当前用的是哪一个（UI/自检据此标注）。
- *
- * ⚠️ **T7 的临时注入点**：读环境变量是权宜之计。T10 会把它换成
- *    配置通道（`contract/src/ipc.ts` 的唯一事实源）+ guest 登录。
- *    之所以现在也**不硬编码**：硬编码会让"连的是哪个上游"变成代码里的秘密 ——
- *    同一个二进制在别人机器上连到哪儿，连日志都看不出来。
+ * ⚠️ 读环境变量只是**临时注入点**，后续会换成配置通道 + guest 登录。
+ *    现在也**不硬编码**：硬编码会让"连的是哪个上游"变成代码里的秘密。
  */
 function configuredUpstreamUrl(): string | null {
   const raw = process.env['CROSSDECK_UPSTREAM_URL'];
@@ -56,13 +40,7 @@ function configuredUpstreamUrl(): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-/**
- * 取当前 token。
- *
- * 优先 `tokenStore`（T10 的 guest 登录会往里写）；
- * T7 阶段额外放行环境变量，好让"连真实 navigate 冒烟"在没有登录通道时也能做。
- * 环境变量是**进程级**的、不落盘，比往 store 里塞一条假凭据干净。
- */
+/** 取当前 token。优先 `tokenStore`；另放行环境变量（进程级、不落盘）以便冒烟。 */
 function currentToken(): string | null {
   const stored = navigateTokenStore.get();
   if (stored !== null && stored.length > 0) return stored;
@@ -108,20 +86,16 @@ const runWindows = new Map<string, number>();
 /**
  * 还没登记窗口就到达的事件。
  *
- * 为什么需要它：`startRun()` **同步**发出 `start` 事件（这是有意的 ——
- * 否则渲染层会漏掉首个事件，也就是"订阅晚于派发"的经典竞态）。
- * 但壳要等 `startRun()` 返回拿到 runId 之后才能登记窗口，
- * 于是 `start` 必然早于登记。少了这个缓冲，每次 run 的首个事件都会丢，
- * 渲染层会一直停在"等待首个 token"。
+ * `startRun()` **同步**发 `start`（有意为之：否则渲染层会漏掉首个事件），
+ * 而壳要等它返回拿到 runId 才能登记窗口 —— 于是 `start` 必然早于登记。
+ * 少了这个缓冲，每次 run 的首个事件都会丢。
  */
 const earlyEvents = new Map<string, AgentStreamEvent[]>();
 
 /**
  * 没人可投递而被丢弃的**终态**事件数 —— 应当恒为 0。
- *
- * 光修 bug 不够：这个失败模式（token 全到齐、done 永远不来）在 UI 上
- * 只表现为"最后一帧卡住"，排查时完全不会往"事件路由写反了"想。
- * 所以给它一个计数器，让它在报告里显性出现。
+ * 这个失败模式在 UI 上只表现为"最后一帧卡住"，排查时不会往"事件路由写反了"想，
+ * 所以给它一个计数器让它在报告里显性出现。
  */
 let undeliveredTerminal = 0;
 
@@ -133,16 +107,13 @@ function deliver(windowId: number, event: AgentStreamEvent): void {
 }
 
 runtime.bus.subscribe((event) => {
-  // ⚠️ 顺序不能反：必须先**查**窗口再删映射。
-  // 写成"先删再查"的话，终态事件（done / error）会查不到窗口而掉进缓冲，
-  // 于是渲染层收齐了全部 token 却永远等不到 done —— 表现为"流式卡在最后一帧"。
-  // 这个坑是真实 E2E 抓出来的，纯单测抓不到（core 那边事件确实发出去了）。
+  // ⚠️ 顺序不能反：必须先**查**窗口再删映射。写成"先删再查"会让终态事件掉进缓冲，
+  //    渲染层收齐全部 token 却永远等不到 done —— 这个是真实 E2E 抓出来的，纯单测抓不到。
   const windowId = runWindows.get(event.runId);
   if (event.type === 'done' || event.type === 'error') runWindows.delete(event.runId);
 
   if (windowId === undefined) {
-    // 只有非终态事件值得缓冲：终态意味着 run 已经结束，
-    // 没有窗口可投递时再缓冲只会变成内存泄漏。
+    // 只有非终态事件值得缓冲；终态意味着 run 已结束，再缓冲只会变成内存泄漏。
     if (event.type !== 'done' && event.type !== 'error') {
       const buffered = earlyEvents.get(event.runId);
       if (buffered === undefined) earlyEvents.set(event.runId, [event]);

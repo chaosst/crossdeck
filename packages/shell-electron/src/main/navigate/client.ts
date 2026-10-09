@@ -1,21 +1,11 @@
 /**
  * navigate 上游的 **HTTP/SSE IO 实现** —— Electron 壳这一份。
  *
- * ══════════════════════════════════════════════════════════════════
- * 这个文件只负责四件事（其余全在 `core/net/navigateStream.ts`）
- * ══════════════════════════════════════════════════════════════════
- *   1. **认证**：`?token=`（Bearer 必 401 —— T3 实测）
- *   2. `fetch` + 非 2xx 判定
- *   3. `reader.read()` + `TextDecoder({stream:true})`
- *   4. `AbortController` —— 取消/超时**真的断连接**
+ * 只负责四件事：`?token=` 认证、`fetch` + 非 2xx 判定、`reader.read()` +
+ * `TextDecoder({stream:true})`、`AbortController`。状态机（首帧超时判据、帧解析、
+ * 终态幂等、差量补齐）在 `core/net/navigateStream.ts`。
  *
- * 状态机（首帧超时的判据、帧 → 语义动作、权威全文的差量补齐、终态幂等）
- * 在 core 里，三端共用。分界线画在**「已解码的文本」**上：
- * core 的 lib 只有 ES2022，拿不到 `Response` / `AbortController` 的类型，
- * 所以网络那半必须留在壳里（详见 `core/src/net/navigateStream.ts` 的文件头）。
- *
- * ⚠️ 这个文件**刻意不 import electron**（凭据外部注入）——
- *    于是它能被裸 Node 加载、单独验证（见 `scripts/verify-navigate-client.mjs`）。
+ * 刻意**不 import electron**（凭据外部注入）→ 可被裸 Node 加载单独验证。
  */
 
 import {
@@ -35,17 +25,14 @@ import type {
 } from '@crossdeck/core';
 
 export interface NavigateClientConfig {
-  /** 形如 `http://127.0.0.1:3001` —— 由 T10 的配置通道注入，**不硬编码**。 */
+  /** 形如 `http://127.0.0.1:3001` —— 由配置通道注入，**不硬编码**。 */
   readonly baseUrl: string;
   /** 取当前 token；无 token 时返回 null（调用方据此先走 guest 登录）。 */
   readonly getToken: () => string | null;
-  /**
-   * 首帧超时（ms）。**必须有，不能无限等** —— 没有它，"上游根本没起来"
-   * 这个最常见的失败会表现为界面永远转圈。
-   */
+  /** 首帧超时（ms）。**不能无限等** —— 没有它，"上游根本没起来"会表现为界面永远转圈。 */
   readonly firstFrameTimeoutMs: number;
   readonly deps: AgentDeps;
-  /** 诊断出口。不给就落 console（见 `NavigateDiagnostic` 的说明）。 */
+  /** 诊断出口。不给就落 console。 */
   readonly onDiagnostic?: (d: NavigateDiagnostic) => void;
 }
 
@@ -70,12 +57,12 @@ export function createNavigateClient(cfg: NavigateClientConfig): ChatClient {
         let res: Response;
         try {
           const url = new URL(endpoint);
-          // 认证只走 query。Bearer 必然 401（T3 实测）。
+          // 认证只走 query（Bearer 必然 401）。
           url.searchParams.set('token', token);
           res = await fetch(url, {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-            // 上游读的是 `question`（T3 实测；缺它会 400，且 400 说明鉴权已通过）。
+            // 上游读的是 `question`（缺它会 400）。
             body: JSON.stringify({ question: req.prompt }),
             signal: ac.signal,
           });
@@ -134,9 +121,8 @@ export function createNavigateClient(cfg: NavigateClientConfig): ChatClient {
 
       const token = cfg.getToken();
       if (token === null || token.length === 0) {
-        // 没有凭据就别假装在连 —— 同步报一个 error 终态。
-        // 同步是允许的：runtime 在 `stream()` 返回后会自查 `run.settled`（T6-b 修的那条），
-        // 而这条路径**没有启动任何定时器/连接**，所以不存在"没人摘的调度"。
+        // 没有凭据就别假装在连。这里同步报终态是安全的：runtime 在 `stream()` 返回后
+        // 会自查 `run.settled`，且这条路径没启动任何定时器/连接。
         stream.settleError('未登录：没有可用凭据，请先获取体验账号');
         return () => {};
       }

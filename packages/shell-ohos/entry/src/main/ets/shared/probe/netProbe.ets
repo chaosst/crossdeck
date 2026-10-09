@@ -1,5 +1,5 @@
 /**
- * T2 spike · 鸿蒙模拟器 → 宿主机 的网络可达性
+ * 网络可达性 spike · 鸿蒙模拟器 → 宿主机
  *
  * ## 要回答的三个问题
  *
@@ -12,8 +12,8 @@
  *
  * ## 为什么端口是 3901 而不是计划里写的 3001
  *
- * 计划 T2 原文写的是 `:3001`，但本机 3001 已经被一个反向代理占着
- * （访问它返回 `502 upstream connect failed`）。T2 的意图是"证实有宿主机的可达通路"，
+ * 计划原文写的是 `:3001`，但本机 3001 已经被一个反向代理占着
+ * （访问它返回 `502 upstream connect failed`）。这个探针的意图是"证实有宿主机的可达通路"，
  * 用一个**确定空闲**的端口更干净、也排除了"代理在中间捣鬼"这个变量。
  *
  * ## 为什么结果要 console.error 打印
@@ -51,7 +51,7 @@ export async function probeUrl(url: string): Promise<NetProbeResult> {
     return { url, ok, detail: `code=${res.responseCode} body=${body.slice(0, 32)}` };
   } catch (err) {
     // 把 BusinessError 的 code 单独拎出来 —— 「权限被拒(201)」与「连不上(2300007)」
-    // 必须能区分，否则整张 T2 结论就只剩一句"失败了"。
+    // 必须能区分，否则整份结论就只剩一句"失败了"。
     const e: BusinessError = err as BusinessError;
     return { url, ok: false, detail: `throw code=${e.code} msg=${e.message}` };
   } finally {

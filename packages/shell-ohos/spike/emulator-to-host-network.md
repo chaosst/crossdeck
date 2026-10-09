@@ -1,12 +1,12 @@
-# T2 · 鸿蒙模拟器 → 宿主机 网络可达性 spike 结论
+# 鸿蒙模拟器 → 宿主机 网络可达性 spike 结论
 
 > 状态：**已完成**。结论：**`127.0.0.1` 不通，必须用宿主机局域网 IP 或 `hdc rport`。**
 > 实测日期：2026-10-07 ｜ 设备：`Pura 90 Pro`（x86_64）｜ hdc 3.2.0f
 
 ## 为什么必须做
 
-这条不通，鸿蒙端的**演示**就是零 —— T9（网络端口实现）与 T14（自检）都要跟着改。
-另外它直接决定 T9 里 URL 怎么写、以及 `verify-ohos.mjs` 要不要加一条前置步骤。
+这条不通，鸿蒙端的**演示**就是零 —— 网络端口实现与自检都要跟着改。
+另外它直接决定网络层 URL 怎么写、以及 `verify-ohos.mjs` 要不要加一条前置步骤。
 
 ## 环境
 
@@ -78,7 +78,7 @@ rport remotenode localnode   - Reserve remote traffic to local host
 ## ④ 明文 `http://` 有没有被平台策略拦？
 
 **没有。** 方式 b 直接以 `http://192.168.1.6:3901` 明文成功返回 200 ——
-鸿蒙模拟器上**没有**等价 Android cleartext 的拦截。所以 T9 **不需要**配 `network_config`
+鸿蒙模拟器上**没有**等价 Android cleartext 的拦截。所以网络层**不需要**配 `network_config`
 白名单（除非真机有别的策略，本结论只覆盖模拟器）。
 
 ## 演示时用哪一种
@@ -90,7 +90,7 @@ rport remotenode localnode   - Reserve remote traffic to local host
 | **c rport** ✅ 推荐 | 地址稳定（恒为 `127.0.0.1`）；不动 Windows 防火墙；与"navigate 也跑在宿主机"的实际情况天然对齐 | 每次起模拟器后要跑一次 `hdc rport` → **要写进 `verify-ohos.mjs` 前置步骤** |
 | b 局域网 IP | 零前置步骤 | IP 是 DHCP 分配的，**换网络就失效**；且要处理防火墙入站 |
 
-→ 因此 T9 的地址**要可配置**，并在 `verify-ohos.mjs` 里自动建立 rport，
+→ 因此鸿蒙壳的地址**要可配置**，并在 `verify-ohos.mjs` 里自动建立 rport，
 不要把一个局域网 IP 硬编码进产品代码。
 
 ## 复现方式
