@@ -1,7 +1,8 @@
 import type { AgentStreamEvent, Capability, DirEntry, Workspace } from '@crossdeck/contract';
-import type { AgentDeps } from '@crossdeck/core';
+import type { AgentDeps, ModelPort } from '@crossdeck/core';
 import {
   AgentRuntime,
+  DEFAULT_FIRST_FRAME_TIMEOUT_MS,
   ScriptedModel,
   SessionStore,
   TOOL_SCENARIO_MARKER,
@@ -9,6 +10,8 @@ import {
   createPathGuard,
   resolveInWorkspace,
 } from '@crossdeck/core';
+import { createWebNavigateClient } from './navigate/client.js';
+import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts } from './ports.js';
 import { runWebSelfCheck } from './selfcheck.js';
 
@@ -51,9 +54,49 @@ const deps: AgentDeps = {
   newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
 };
 
+// ─────────────────────────────────────────────────────────────
+// 上游选择（T8）—— 与 Electron 壳同一条决策：有地址就接 navigate，
+// 否则退回脚本上游。差别只在"地址从哪来"：
+//   · Electron 读环境变量（主进程才有 env）
+//   · Web 壳读 URL 参数（页面没有 env，而 URL 是页面唯一天然可配的东西）
+//
+// `?upstream=1`（或 `?upstream=`）→ **同源**（打相对路径，cookie 自然带上）
+// `?upstream=/proxy` / `?upstream=https://host` → 指定前缀
+// 不给 → 脚本上游（离线自检仍然跑得动）
+//
+// ⚠️ 同源是唯一被支持的部署形态（T8 前置决策走 A：Caddy 同域反代，不动服务端）。
+//    给绝对地址只在"真做了跨域且服务端开了 CORS + `SameSite=None; Secure`"时成立。
+// ─────────────────────────────────────────────────────────────
+const navigateBase = (() => {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('upstream')) return null;
+  const raw = params.get('upstream') ?? '';
+  // `?upstream=1` 是"打开同源"的旗标写法，别把它当成路径前缀
+  return raw === '1' ? '' : raw;
+})();
+
+/** 当前上游的种类与地址。**UI 与自检必须如实显示** —— 不许"假装在连真上游"。 */
+function activeUpstream(): { kind: 'scripted' | 'navigate'; baseUrl: string } {
+  return navigateBase === null
+    ? { kind: 'scripted', baseUrl: '' }
+    : { kind: 'navigate', baseUrl: navigateBase === '' ? '（同源）' : navigateBase };
+}
+
+function createModel(): ModelPort {
+  if (navigateBase === null) return new ScriptedModel({ deps });
+  return new WebNavigateModel({
+    deps,
+    client: createWebNavigateClient({
+      baseUrl: navigateBase,
+      firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+      deps,
+    }),
+  });
+}
+
 const agent = new AgentRuntime({
   deps,
-  model: new ScriptedModel({ deps }),
+  model: createModel(),
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -79,6 +122,9 @@ if (app === null) throw new Error('缺少 #app 挂载点');
 
 const root = h('div');
 app.append(root);
+
+// 机器可读的"当前上游"（自检/验收脚本据此断言，不必去 parse 文案）。
+document.body.dataset['upstream'] = activeUpstream().kind;
 
 root.append(
   h('h1', {}, 'crossdeck · Web 壳'),
@@ -205,12 +251,27 @@ root.append(
   });
 
   setPaused(false);
+  const up = activeUpstream();
   root.append(
     card(
       'Agent 流式（同进程，没有 IPC 通道）',
       'core 的 StreamBus 直接订阅 DOM。Electron 壳里那一条 agent:stream 单向通道在这里整个消失 —— ' +
-        '跨进程才需要它。背压算法是同一份（暂停期间零推送）。',
-      h('div', { class: 'row' }, sendBtn, toolBtn, pauseBtn, h('span', { class: 'badge' }, `session ${session.id.slice(0, 8)}`)),
+        '跨进程才需要它。背压算法是同一份（暂停期间零推送）。' +
+        '接上游：地址栏加 `?upstream=1`（同源）或 `?upstream=<前缀>`；不加则用脚本上游。',
+      h(
+        'div',
+        { class: 'row' },
+        sendBtn,
+        toolBtn,
+        pauseBtn,
+        h('span', { class: 'badge' }, `session ${session.id.slice(0, 8)}`),
+        // 如实标注当前上游：脚本上游被当成真上游，是这个项目最不该出现的诚实性缺口。
+        h(
+          'span',
+          { class: up.kind === 'navigate' ? 'ok' : 'badge', 'data-testid': 'web-upstream' },
+          up.kind === 'navigate' ? `上游：navigate ${up.baseUrl}` : '上游：脚本（离线可跑，不是真上游）',
+        ),
+      ),
       out,
       meta,
     ),
