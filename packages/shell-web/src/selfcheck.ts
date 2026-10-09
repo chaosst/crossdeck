@@ -7,6 +7,11 @@
  *   ① 能力**如实降级**   —— 浏览器没有的能力必须报「没有」，不能给假实现
  *   ② scope 算法仍成立   —— 同一个 PathGuard，换了个文件系统后端
  *   ③ 内核仍能跑         —— AgentRuntime 的流式 / 背压 / 工具链路在浏览器里跑通
+ *   ④ 上游链路仍成立     —— 接**真实 HTTP/SSE 上游**（同源假服务器）跑通
+ *
+ * ④ 只验三件事（与 Electron 壳同一口径，分工见开发计划）：真的连上了 /
+ * 终态恰好一个（含两条断流路径）/ abort 有效。**帧解析的细粒度断言只在
+ * `scripts/verify-core-sse.mjs`** —— 在三个壳里各抄一套，三套会各自漂移。
  *
  * 为什么不用 `verify-core-agent.mjs` 那套假调度器：那套是**确定性**验证，
  * 已经覆盖了背压的逐帧语义。这里要证明的是另一件事 —— 真实 `setInterval`
@@ -21,6 +26,7 @@ import type { AgentStreamEvent, Capability } from '@crossdeck/contract';
 import {
   AgentRuntime,
   BackpressurePump,
+  DEFAULT_FIRST_FRAME_TIMEOUT_MS,
   ScriptedModel,
   SessionStore,
   StreamBus,
@@ -31,7 +37,9 @@ import {
   echoTool,
   resolveInWorkspace,
 } from '@crossdeck/core';
-import type { AgentDeps } from '@crossdeck/core';
+import type { AgentDeps, NavigateDiagnostic } from '@crossdeck/core';
+import { createWebNavigateClient } from './navigate/client.js';
+import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts, detectCapabilities } from './ports.js';
 
 export interface WebSelfCheckReport {
@@ -144,6 +152,85 @@ function fakeScheduler(): { deps: AgentDeps; advance: (ms: number) => void } {
       t = end;
     },
   };
+}
+
+/** 收到终态后再多收一会儿的窗口 —— 见 `navRun` 里的说明。 */
+const TERMINAL_GRACE_MS = 200;
+
+interface NavTerminal {
+  readonly type: 'done' | 'error';
+  readonly code?: string;
+  readonly message?: string;
+}
+
+interface NavRunTrace {
+  /** 订阅到的完整事件序列（类型名） */
+  types: string[];
+  /** 终态事件**全量**（不是"第一个"）—— `terminals.length !== 1` 就是要抓的 bug */
+  terminals: NavTerminal[];
+  textLength: number;
+  tokenTexts: string[];
+  usageCompletion: number | null;
+}
+
+/** 假上游自己的账本（由 `GET /__selfcheck/nav-stats` 下发）。 */
+interface NavUpstreamStats {
+  logins: number;
+  frames: Record<string, number>;
+  ended: string[];
+  doneSent: string[];
+  clientGone: string[];
+  unknown: string[];
+}
+
+/**
+ * 跑一次**真实上游链路**，并在订阅点收全量事件。
+ *
+ * ⚠️ 收到终态后**不立刻退订** —— 一收到就 `off()` 的话，「终态恰好一个」这条断言
+ *    永远为真（第二个终态根本没人听），那等于没有断言。留一个短窗口继续收，
+ *    才有机会抓到它 —— 而"跑出两个终态"正是最该被抓到的那类 bug。
+ */
+function navRun(agent: AgentRuntime, prompt: string, opts: { abortAfterMs?: number } = {}): Promise<NavRunTrace> {
+  return new Promise((resolve, reject) => {
+    const trace: NavRunTrace = { types: [], terminals: [], textLength: 0, tokenTexts: [], usageCompletion: null };
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      off();
+      reject(new Error(`上游 run 在 ${RUN_TIMEOUT_MS}ms 内没有终结（事件序列：${trace.types.join(',')}）`));
+    }, RUN_TIMEOUT_MS);
+
+    const off = agent.bus.subscribe((event) => {
+      trace.types.push(event.type);
+      if (event.type === 'token') {
+        trace.textLength += event.text.length;
+        trace.tokenTexts.push(event.text);
+      } else if (event.type === 'done') {
+        trace.terminals.push({ type: 'done' });
+        trace.usageCompletion = event.usage.completionTokens;
+      } else if (event.type === 'error') {
+        trace.terminals.push({ type: 'error', code: event.code, message: event.message });
+      }
+      if ((event.type === 'done' || event.type === 'error') && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        setTimeout(() => {
+          off();
+          resolve(trace);
+        }, TERMINAL_GRACE_MS);
+      }
+    });
+
+    const handle = agent.startRun({ sessionId: 'selfcheck-nav', input: prompt });
+    if (opts.abortAfterMs !== undefined) {
+      // 等它真的滴了几帧再停 —— 停得太早测的是"还没开始就取消"，不是"中途中断"。
+      setTimeout(() => {
+        agent.abort(handle.runId);
+      }, opts.abortAfterMs);
+    }
+  });
 }
 
 export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
@@ -470,7 +557,260 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
   }
 
   // ───────────────────────────────────────────────────────────
-  // ④ 驱动一次**真实 UI 点击** —— 让"越界被拒"进入归档截图
+  // ④ 真实上游链路 —— 同源假 SSE 上游
+  //
+  // 与 Electron 壳那一版**刻意只验三件事**（分工见开发计划）：
+  //   ① 真的连上了   —— 逐帧到达、恰好一个 done、正文逐字一致、凭据确实走 cookie
+  //   ② 终态恰好一个 —— 含两条**不同的**断流路径（干净 EOF / socket 销毁）与上游 error 帧
+  //   ③ abort 有效   —— 客户端收 ABORTED，且**对端**看见连接真的被关掉
+  //
+  // 帧解析 / 映射的细粒度断言**只在 `scripts/verify-core-sse.mjs`**。
+  // 三端各抄一套的话三套会各自漂移 —— 那比少一套更糟。
+  //
+  // 场景词表**不在这里硬编码**：页面向 `/__selfcheck/nav-fixture` 取。
+  // 词表对不上时页面拿不到 fixture → 自检当场红，漂移不可能静默通过。
+  // ⚠️ 所以这一段被**单独开 dev server 跑 `?selfcheck=1`** 时必然失败：
+  //    那台服务器没有假上游。自检页与 `scripts/web-selfcheck.mjs` 是一对。
+  // ───────────────────────────────────────────────────────────
+  try {
+    const fixtureRes = await fetch('/__selfcheck/nav-fixture');
+    if (!fixtureRes.ok) {
+      throw new Error(
+        `取不到假上游场景词表（HTTP ${fixtureRes.status}）—— 自检页只能由 ` +
+          'packages/shell-web/scripts/web-selfcheck.mjs 提供（它同时挂着同源假上游）',
+      );
+    }
+    const fixture = (await fixtureRes.json()) as {
+      scenarios: Record<string, string>;
+      normalText: string;
+      unknownPrompt: string;
+    };
+    /** 让运行器知道这一段**真的跑过** —— 报告里少一整块结论不该被默认通过。 */
+    probe.navRan = true;
+    probe.navFixture = fixture.scenarios;
+
+    const navPrompt = (key: string): string => {
+      const p = fixture.scenarios[key];
+      if (typeof p !== 'string') {
+        throw new Error(`假上游词表里没有场景 "${key}" —— 页面与服务端的场景名对不上了`);
+      }
+      return p;
+    };
+
+    const navDiagnostics: NavigateDiagnostic[] = [];
+    const navAgent = new AgentRuntime({
+      deps: agentDeps,
+      model: new WebNavigateModel({
+        deps: agentDeps,
+        client: createWebNavigateClient({
+          // 同源：留空 → 打**相对路径**，cookie 由浏览器按同源规则自动带上。
+          // 拼 location.origin 反而会把"改端口 / 改域名都不用改代码"这件事弄丢。
+          baseUrl: '',
+          firstFrameTimeoutMs: DEFAULT_FIRST_FRAME_TIMEOUT_MS,
+          deps: agentDeps,
+          onDiagnostic: (d) => navDiagnostics.push(d),
+        }),
+      }),
+    });
+
+    // 反向 1：**未登录**（没有 cookie）时上游必须 401。
+    // 少了这条，"真的连上了"完全可能只是"上游根本没在鉴权"。
+    {
+      const r = await navRun(navAgent, navPrompt('normal'));
+      const msg = r.terminals[0]?.message ?? '';
+      check(
+        'nav.anonymousIsRejected',
+        r.terminals.length === 1 && msg.includes('HTTP 401'),
+        msg.length > 0 ? msg : r.types.join(','),
+      );
+      check('nav.anonymousSawNoText', r.textLength === 0, r.textLength);
+    }
+
+    // 登录这一步**不是**壳的代码：Web 壳刻意没有登录流程 —— 凭据是同源 httpOnly cookie，
+    // 由 navigate 自己的页面种下。自检在这里把"已经登录过"这个前提做出来。
+    {
+      const res = await fetch('/api/login/guest', { method: 'POST', credentials: 'same-origin' });
+      const body = (await res.json()) as { role?: string };
+      check('nav.guestLoginOk', res.ok && body.role === 'guest', `HTTP ${res.status} role=${String(body.role)}`);
+    }
+
+    // ── 五个场景 ──
+    const navResults: Record<string, NavRunTrace & { error?: string; chunkFrames?: number }> = {};
+    const order: Array<[string, { abortAfterMs?: number }]> = [
+      ['normal', {}],
+      ['silent-close', {}],
+      ['killed', {}],
+      ['upstream-error', {}],
+      // 等它滴几帧再停（服务端 60ms 一滴），否则测的是"还没开始就取消"。
+      ['abort', { abortAfterMs: 260 }],
+    ];
+    for (const [key, opts] of order) {
+      const before = navDiagnostics.length;
+      try {
+        const t: NavRunTrace & { chunkFrames?: number } = await navRun(navAgent, navPrompt(key), opts);
+        t.chunkFrames = navDiagnostics.slice(before).filter((d) => d.type === 'chunk').length;
+        navResults[key] = t;
+      } catch (err) {
+        navResults[key] = {
+          types: [],
+          terminals: [],
+          textLength: 0,
+          tokenTexts: [],
+          usageCompletion: null,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    probe.navScenarios = Object.fromEntries(
+      Object.entries(navResults).map(([k, r]) => {
+        const term = r.terminals[r.terminals.length - 1];
+        return [
+          k,
+          {
+            events: r.types.join(','),
+            terminalCount: r.terminals.length,
+            terminal: term?.type ?? null,
+            code: term?.code ?? null,
+            textLength: r.textLength,
+            chunkFrames: r.chunkFrames ?? 0,
+            /** 逐帧原样留档：文本总量对不上时，光看"长度不符"是查不出丢在哪一段的。 */
+            tokenTexts: r.tokenTexts,
+          },
+        ];
+      }),
+    );
+
+    // 三端共用的那张期望表 —— 与 Electron 壳 / verify-core-agent 同一个形状。
+    //
+    // `messageIncludes` 不是装饰：两条断流路径**必须**能被区分开。
+    //   干净 EOF（`res.end()`，没发 done）→ `finishStream()` → "没收到 done 帧"
+    //   socket 销毁（`res.destroy()`）    → `reader.read()` 抛错 → "读取上游流失败"
+    // 只断言"都是 error / UPSTREAM"的话，把两条路合成一条也照样绿 ——
+    // 而合成恰恰会漏掉另一条路径上的失败模式。所以这里锚定各自的措辞。
+    const navExpect: Record<
+      string,
+      { terminal: 'done' | 'error'; code: string | null; minTokens: number; messageIncludes?: string }
+    > = {
+      normal: { terminal: 'done', code: null, minTokens: 2 },
+      'silent-close': {
+        terminal: 'error',
+        code: 'UPSTREAM',
+        minTokens: 1,
+        messageIncludes: '没收到 done 帧',
+      },
+      killed: { terminal: 'error', code: 'UPSTREAM', minTokens: 1, messageIncludes: '读取上游流失败' },
+      'upstream-error': { terminal: 'error', code: 'UPSTREAM', minTokens: 1, messageIncludes: '上游报错' },
+      abort: { terminal: 'error', code: 'ABORTED', minTokens: 1 },
+    };
+    for (const [key, want] of Object.entries(navExpect)) {
+      const r = navResults[key];
+      if (r === undefined) {
+        check(`nav.${key}.ran`, false, '场景没跑到');
+        continue;
+      }
+      if (r.error !== undefined) check(`nav.${key}.noThrow`, false, r.error);
+      const term = r.terminals[r.terminals.length - 1];
+      check(`nav.${key}.exactlyOneTerminal`, r.terminals.length === 1, `${r.terminals.length} 个：${r.types.join(',')}`);
+      check(`nav.${key}.terminal`, term?.type === want.terminal, `${String(term?.type)}（期望 ${want.terminal}）`);
+      if (want.code !== null) {
+        check(`nav.${key}.code`, term?.code === want.code, `${String(term?.code)}（期望 ${want.code}）`);
+      }
+      if (want.messageIncludes !== undefined) {
+        const message = term?.message ?? '';
+        check(
+          `nav.${key}.message`,
+          message.includes(want.messageIncludes),
+          `${JSON.stringify(message)} 里没有 ${JSON.stringify(want.messageIncludes)}`,
+        );
+      }
+      check(`nav.${key}.minFrames`, r.tokenTexts.length >= want.minTokens, `${r.tokenTexts.length} < ${want.minTokens}`);
+    }
+
+    // ① 的铁证：正文逐字一致 + 分片真的分次到 + completionTokens 与文本长度相等
+    const navNormal = navResults['normal'];
+    if (navNormal !== undefined) {
+      const joined = navNormal.tokenTexts.join('');
+      check(
+        'nav.normal.textMatchesUpstream',
+        joined === fixture.normalText,
+        `${JSON.stringify(joined)} ≠ ${JSON.stringify(fixture.normalText)}`,
+      );
+      check(
+        'nav.normal.incrementalArrival',
+        (navNormal.chunkFrames ?? 0) >= 2,
+        `客户端只看到 ${navNormal.chunkFrames ?? 0} 片 —— 退化成了"攒齐再发"，逐帧断言失去意义`,
+      );
+      check(
+        'nav.normal.usageEqualsTextLength',
+        navNormal.usageCompletion === navNormal.textLength,
+        `${String(navNormal.usageCompletion)} vs ${navNormal.textLength}`,
+      );
+    }
+    // ⚠️ 错误路径**故意不比正文**：终态走的是 `pump.stop()`，队列尾那块（不足一个
+    //    produceChunkSize）本来就丢 —— 那是既定的取舍。拿它当逐字断言会变成偶发红。
+    //    所以断流场景只断"终态恰好一个 + 错误码 + 至少收到过帧"。
+
+    // Web 壳的凭据形态：诊断里必须报 cookie。壳的差异就落在这里 ——
+    // 若哪天有人给 Web 壳也塞上 `?token=`，这条会红。
+    {
+      const auths = navDiagnostics.flatMap((d) => (d.type === 'request' ? [d.auth] : []));
+      check('nav.authIsCookie', auths.length > 0 && auths.every((a) => a === 'cookie'), auths.join(',') || '(无请求诊断)');
+    }
+
+    // 反向 2：不认识的场景必须 400。
+    // 它同时证明前面那些场景是**被词表认出来**的，而不是"上游对谁都一样好说话"。
+    {
+      const r = await navRun(navAgent, fixture.unknownPrompt);
+      const msg = r.terminals[0]?.message ?? '';
+      check(
+        'nav.unknownPromptRejected',
+        r.terminals.length === 1 && msg.includes('HTTP 400'),
+        msg.length > 0 ? msg : r.types.join(','),
+      );
+    }
+
+    // ③ 对端观察 —— 「停止真的断了连接」唯一能拿到证据的地方。
+    //    客户端自己说"我 abort 了"不算，得看**上游**有没有看见连接被关。
+    //    这一步是异步到达的（socket 拆除要绕一圈），给它一个有界窗口，别靠猜。
+    {
+      let stats: NavUpstreamStats | null = null;
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const res = await fetch('/__selfcheck/nav-stats');
+        stats = (await res.json()) as NavUpstreamStats;
+        if (stats.clientGone.includes('abort')) break;
+        await sleep(80);
+      }
+      probe.navUpstreamStats = stats;
+      check(
+        'nav.abortSeenByPeer',
+        stats !== null && stats.clientGone.includes('abort'),
+        stats === null ? '取不到上游统计' : stats.clientGone.join(',') || '(空)—— "停止"只停了渲染，连接还挂着',
+      );
+      check(
+        'nav.noDoneInTruncatedScenarios',
+        stats !== null && !stats.doneSent.includes('silent-close') && !stats.doneSent.includes('killed'),
+        stats === null ? '取不到上游统计' : `doneSent=[${stats.doneSent.join(',')}] —— 场景造错了，截断判定被绕过`,
+      );
+      check('nav.upstreamSawLogin', stats !== null && stats.logins >= 1, stats?.logins ?? '(取不到)');
+      check(
+        'nav.upstreamSawUnknownPrompt',
+        stats !== null && stats.unknown.includes(fixture.unknownPrompt),
+        stats === null ? '取不到上游统计' : `unknown=[${stats.unknown.join(',')}]`,
+      );
+    }
+
+    // 全部终态之后不该还有活跃 run（abort 收尾不干净会留在这），也不该有终态之后的事件。
+    check('nav.noActiveRunsLeft', navAgent.activeRunCount === 0, navAgent.activeRunCount);
+    await sleep(TERMINAL_GRACE_MS);
+    check('nav.noEventsAfterTerminal', navAgent.droppedAfterTerminal === 0, navAgent.droppedAfterTerminal);
+  } catch (err) {
+    // 这一段整块没跑成（最典型：没配套的假上游）—— 记成失败，不静默跳过。
+    check('nav.ran', false, err instanceof Error ? err.message : String(err));
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // ⑤ 驱动一次**真实 UI 点击** —— 让"越界被拒"进入归档截图
   //    算法断言再密，也证明不了"界面上看得见"。
   // ───────────────────────────────────────────────────────────
   try {
