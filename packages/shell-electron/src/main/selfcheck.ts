@@ -3,7 +3,14 @@ import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from '
 import { join } from 'node:path';
 import { IPC } from '@crossdeck/contract';
 import type { PerfSnapshot } from '@crossdeck/contract';
-import { droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
+import { activeRunCount, droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
+import {
+  FAKE_NORMAL_CHUNKS,
+  FAKE_NORMAL_TEXT,
+  FAKE_SCENARIO_PROMPTS,
+  startFakeNavigateUpstream,
+} from './fakeNavigateUpstream.js';
+import type { FakeNavigateUpstream } from './fakeNavigateUpstream.js';
 import { resetPerfForSelfCheck } from './perf.js';
 import { runtimeConfig } from './runtimeConfig.js';
 import { currentUpdateStatus, resetUpdateStateForSelfCheck } from './updater.js';
@@ -206,8 +213,42 @@ export interface SelfCheckProbe {
   /** 退订之后再触发一次，事件数应当**不变** —— 不变才说明真的退订了 */
   updateEventsBeforeUnsub?: number;
   updateEventsAfterUnsub?: number;
+  // ── 本地假 SSE 上游：五个场景 ──
+  navScenarios?: Record<string, SelfCheckNavScenario>;
+  navUpstreamConfigured?: boolean;
+  navConfigureError?: string;
+  navLoginRole?: string | null;
+  navLoginError?: string;
+  /** 登录结果里**不该**出现 token 字段（凭据只活主进程） */
+  navLoginHasTokenField?: boolean;
+  navUpstreamRestored?: boolean;
   domStatus: string | null;
   domText: string;
+}
+
+/** 一个假上游场景在渲染层观察到的结果。 */
+export interface SelfCheckNavScenario {
+  /** 订阅到的完整事件序列（类型名） */
+  events?: string[];
+  tokens?: number;
+  /** 订阅到的 token 文本拼接长度 */
+  textLength?: number;
+  /** 拼接出来的正文（与假上游写出的常量逐字比对） */
+  text?: string;
+  /** 逐帧原文（诊断用：总量对不上时看丢在哪一段） */
+  tokenTexts?: string[];
+  terminalCount?: number;
+  terminal?: string | null;
+  errorCode?: string | null;
+  lastEvent?: string | null;
+  ended?: boolean;
+  error?: string;
+  /** `done` 事件里的 usage.completionTokens */
+  usageCompletion?: number | null;
+  /** DOM 上的 `data-stage` */
+  domStage?: string | null;
+  /** DOM 上的 `data-len` */
+  domTextLength?: number;
 }
 
 export interface SelfCheckReport {
@@ -264,15 +305,22 @@ export interface SelfCheckReport {
  *   ② 注释里不能出现反引号，会把模板字符串提前终止。
  *   两个坑都踩过（表现只有一句 "Script failed to execute"）。
  */
-function buildProbeScript(fixture: ScopeFixture): string {
+function buildProbeScript(
+  fixture: ScopeFixture,
+  nav: { readonly baseUrl: string; readonly prompts: Readonly<Record<string, string>> },
+): string {
   const injected = JSON.stringify({
     probeFile: fixture.probeFile,
     symlinkName: fixture.symlink.name,
   });
+  // 假上游的地址与"场景 → prompt"映射由 main 侧注入：探针脚本里**不硬编码**端口，
+  // 否则端口一变（系统分配）就得同步改两处。
+  const navInjected = JSON.stringify(nav);
 
   return `(async () => {
   const out = {};
   const fixture = ${injected};
+  const NAV = ${navInjected};
   const parseErr = (e) => {
     const message = String((e && e.message) || e);
     const m = /^\\[([A-Z_]+)(?::([A-Z_]+))?\\]\\s?([\\s\\S]*)$/.exec(message);
@@ -572,6 +620,110 @@ function buildProbeScript(fixture: ScopeFixture): string {
   out.updateEventsBeforeUnsub = upEvents.length;
   offUp();
 
+  // ─────────────────────────────────────────────────────────────
+  // 本地假 SSE 上游 —— 五条路径
+  //
+  // 走的是**完整真实链路**：配置通道设地址 → guest 登录拿 token → agent:run →
+  // 主进程 fetch 假上游 → SSE 解析/映射 → 事件推回渲染层。
+  // 被替换的只有"上游是谁"这一件事。
+  //
+  // 为什么必须在这里（渲染层）而不是 main 内部直接调 runtime：
+  // 判据里有一条是"**三处一致**"—— 主进程不变量 / 订阅到的最后一帧 / DOM 的 data-stage。
+  // 从 main 内部直接跑，第二三处就无从观察了。
+  // ─────────────────────────────────────────────────────────────
+  out.navScenarios = {};
+  try {
+    const st = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: NAV.baseUrl });
+    out.navUpstreamConfigured = st.upstream.kind === 'navigate' && st.upstream.baseUrl === NAV.baseUrl;
+  } catch (e) {
+    out.navUpstreamConfigured = false;
+    out.navConfigureError = parseErr(e).message;
+  }
+
+  try {
+    const login = await window.bridge.invoke('navigate:login-guest');
+    out.navLoginRole = login.role;
+    out.navLoginHasTokenField = Object.keys(login).indexOf('token') >= 0;
+  } catch (e) {
+    out.navLoginError = parseErr(e).message;
+  }
+
+  const readStreamDom = () => {
+    const stageEl = document.querySelector('[data-testid="stream-stage"]');
+    const textEl = document.querySelector('[data-testid="stream-text"]');
+    return {
+      stage: stageEl ? stageEl.getAttribute('data-stage') : null,
+      textLength: textEl ? Number(textEl.getAttribute('data-len')) : -1,
+    };
+  };
+
+  for (const key of Object.keys(NAV.prompts)) {
+    const evts = [];
+    const off = window.bridge.on('agent:stream', (e) => evts.push(e));
+    const rec = {
+      ended: false,
+      tokens: 0,
+      textLength: 0,
+      text: '',
+      terminalCount: 0,
+      terminal: null,
+      errorCode: null,
+      usageCompletion: null,
+      lastEvent: null,
+      domStage: null,
+      domTextLength: -1,
+    };
+    try {
+      const created = await window.bridge.invoke('session:create', { title: 'selfcheck-nav-' + key });
+      const started = await window.bridge.invoke('agent:run', {
+        sessionId: created.id,
+        input: NAV.prompts[key],
+      });
+      if (key === 'abort') {
+        // 等它真的滴了几帧再停 —— 停得太早测的是"还没开始就取消"，不是"中途中断"
+        await new Promise((r) => setTimeout(r, 260));
+        await window.bridge.invoke('agent:abort', { runId: started.runId });
+      }
+      rec.ended = await waitEnd(evts, 12000);
+    } catch (e) {
+      rec.error = parseErr(e).message;
+    }
+    off();
+
+    // 等 React 把这一帧画完再读 DOM，否则读到的还是上一个场景的状态
+    await new Promise((r) => setTimeout(r, 150));
+    const dom = readStreamDom();
+
+    const terms = evts.filter((e) => e.type === 'done' || e.type === 'error');
+    const term = terms.length ? terms[terms.length - 1] : null;
+    rec.events = evts.map((e) => e.type);
+    rec.tokens = evts.filter((e) => e.type === 'token').length;
+    rec.text = evts
+      .filter((e) => e.type === 'token')
+      .map((e) => e.text)
+      .join('');
+    rec.textLength = rec.text.length;
+    rec.terminalCount = terms.length;
+    rec.terminal = term ? term.type : null;
+    rec.errorCode = term && term.type === 'error' ? term.code : null;
+    rec.usageCompletion = term && term.type === 'done' ? term.usage.completionTokens : null;
+    rec.lastEvent = evts.length ? evts[evts.length - 1].type : null;
+    // 逐帧原样留档：文本总量对不上时，光看"长度不符"是查不出丢在哪一段的。
+    rec.tokenTexts = evts.filter((e) => e.type === 'token').map((e) => String(e.text));
+    rec.domStage = dom.stage;
+    rec.domTextLength = dom.textLength;
+    out.navScenarios[key] = rec;
+  }
+
+  // 收尾必须还原成脚本上游：不还原的话报告落盘后进程还指着一个即将被关掉的假服务器，
+  // 后面任何一次误触发的 run 都会变成一个莫名其妙的连接错误。
+  try {
+    const back = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: null });
+    out.navUpstreamRestored = back.upstream.kind === 'scripted';
+  } catch (e) {
+    out.navUpstreamRestored = false;
+  }
+
   const statusEl = document.querySelector('[data-testid="boot-status"]');
   out.domStatus = statusEl ? statusEl.getAttribute('data-state') : null;
   out.domText = document.body.innerText.slice(0, 1500);
@@ -654,6 +806,17 @@ export async function runSelfCheck(
   const warnings: string[] = [];
   let domStatus: string | null = null;
 
+  // 假 SSE 上游必须在**探针之前**起好 —— 探针的第一件事就是把上游切到它上面。
+  // 起不来不算"跳过"：那样五条 navigate 路径一条都没验，报告却会显示 ok，
+  // 正是项目里最忌讳的那种"看起来正常的绿"。
+  let fake: FakeNavigateUpstream | null = null;
+  try {
+    fake = await startFakeNavigateUpstream();
+    console.log(`[selfcheck] 假 SSE 上游：${fake.baseUrl}`);
+  } catch (err) {
+    failures.push(`假 SSE 上游起不来（${String(err)}）—— navigate 五条路径全部无法验证`);
+  }
+
   try {
     await new Promise<void>((resolve) => {
       if (!win.webContents.isLoading()) return resolve();
@@ -671,7 +834,10 @@ export async function runSelfCheck(
   let probe: SelfCheckProbe | null = null;
   try {
     probe = (await win.webContents.executeJavaScript(
-      buildProbeScript(fixture),
+      buildProbeScript(fixture, {
+        baseUrl: fake === null ? '' : fake.baseUrl,
+        prompts: FAKE_SCENARIO_PROMPTS,
+      }),
     )) as SelfCheckProbe;
 
     if (!probe.hasBridge) failures.push('window.bridge 未挂载 —— preload 没生效或 sandbox 下 ESM/CJS 格式不对');
@@ -837,8 +1003,145 @@ export async function runSelfCheck(
       failures.push('没有可用版本时 update:download 静默成功了 —— UI 会一直等一个永远不来的进度');
     }
     if (probe.updateInstallThrew !== true) failures.push('未就绪时 update:install 静默成功了');
+
+    // ── 本地假 SSE 上游：五条路径 ──
+    //
+    // 每条都同时断言四件事：**恰好一个终态** / 终态是哪种 / 末个事件 / DOM 与订阅一致。
+    // 少任何一条都会漏掉一类真实故障：
+    //   · 只断言"有终态" → 把 done 当 error 也能过
+    //   · 只断言终态 → "UI 收到 error 但 DOM 还停在流式中"照样过
+    //   · 不断言 token 帧数 → 上游退化成一次性到达（真流式没了）也过
+    if (probe.navUpstreamConfigured !== true) {
+      failures.push(
+        `配置通道没能把上游切到假 SSE 服务器（${String(probe.navConfigureError ?? '原因未知')}）` +
+          '—— 下面五条断言全部不可信',
+      );
+    }
+    if (probe.navLoginError !== undefined) failures.push(`假上游的 guest 登录失败：${probe.navLoginError}`);
+    if (probe.navLoginRole !== 'guest') {
+      failures.push(`guest 登录应拿到 role=guest，实际 ${String(probe.navLoginRole)}`);
+    }
+    if (probe.navLoginHasTokenField === true) {
+      failures.push('登录结果里出现了 token 字段 —— 凭据不该回给渲染层');
+    }
+    if (probe.navUpstreamRestored !== true) {
+      failures.push('自检收尾没有把上游还原成脚本上游 —— 后续 run 会打到一个已关闭的假服务器');
+    }
+
+    /**
+     * 每个场景的期望。`minTokens` 取假上游实际写出的片数 ——
+     * 断言"收满了"而不是"收到了"，因为少一片意味着丢帧，而丢帧在 UI 上看着完全正常。
+     *
+     * ⚠️ 错误三条（silent-close / killed / upstream-error）只断言**帧数下限**与
+     *    **渲染层自洽**，不逐字比对上游原文：终态是 error 时 `pump.stop()` 会清掉队列，
+     *    排在 `#pending` 里的最后一小段（< produceChunkSize）不会补发。
+     *    这是刻意的取舍（已经报错了，尾字不补），但它意味着"交付文本长度"在这里
+     *    天然可能少 1–2 个字符 —— 拿它去做逐字断言会得到一个时红时绿的测试。
+     */
+    const navExpect: Record<
+      string,
+      { terminal: 'done' | 'error'; code: string | null; minTokens: number }
+    > = {
+      normal: { terminal: 'done', code: null, minTokens: FAKE_NORMAL_CHUNKS.length },
+      'silent-close': { terminal: 'error', code: 'UPSTREAM', minTokens: FAKE_NORMAL_CHUNKS.length },
+      killed: { terminal: 'error', code: 'UPSTREAM', minTokens: FAKE_NORMAL_CHUNKS.length },
+      'upstream-error': { terminal: 'error', code: 'UPSTREAM', minTokens: 3 },
+      abort: { terminal: 'error', code: 'ABORTED', minTokens: 1 },
+    };
+
+    for (const [key, want] of Object.entries(navExpect)) {
+      const rec = probe.navScenarios?.[key];
+      if (rec === undefined) {
+        failures.push(`场景 ${key} 没有结果 —— 探针没跑到它`);
+        continue;
+      }
+      if (rec.error !== undefined) failures.push(`场景 ${key} 调用抛错：${rec.error}`);
+      if (rec.ended !== true) failures.push(`场景 ${key} 12s 内没有终态（UI 会永远转圈）`);
+      if (rec.terminalCount !== 1) {
+        failures.push(`场景 ${key} 应**恰好** 1 个终态，实际 ${String(rec.terminalCount)}`);
+      }
+      if (rec.terminal !== want.terminal) {
+        failures.push(`场景 ${key} 终态应为 ${want.terminal}，实际 ${String(rec.terminal)}`);
+      }
+      if (want.code !== null && rec.errorCode !== want.code) {
+        failures.push(
+          `场景 ${key} 错误码应为 ${want.code}，实际 ${String(rec.errorCode)}` +
+            (want.code === 'ABORTED' ? '（压成 UPSTREAM 会让"你停止了"显示成"服务器出错"）' : ''),
+        );
+      }
+      if (rec.lastEvent !== want.terminal) {
+        failures.push(`场景 ${key} 末个事件应为 ${want.terminal}，实际 ${String(rec.lastEvent)}`);
+      }
+      if ((rec.tokens ?? 0) < want.minTokens) {
+        failures.push(
+          `场景 ${key} token 帧过少（${String(rec.tokens)} < ${want.minTokens}）—— 逐帧没走通或中间丢了帧`,
+        );
+      }
+      // 三处一致的第三处：DOM 的 data-stage 必须与订阅到的终态一致。
+      // 不一致 = 事件到了订阅点却没画到界面上（用户看到的停在流式中）。
+      if (rec.domStage !== want.terminal) {
+        failures.push(
+          `场景 ${key} DOM data-stage 应为 ${want.terminal}，实际 ${String(rec.domStage)} —— ` +
+            '事件到了渲染层却没反映到界面上',
+        );
+      }
+      if (rec.domTextLength !== rec.textLength) {
+        failures.push(
+          `场景 ${key} DOM 文本长度(${String(rec.domTextLength)}) 与订阅到的 token 总量` +
+            `(${String(rec.textLength)}) 不一致 —— 渲染层漏帧或多帧`,
+        );
+      }
+    }
+
+    const navNormal = probe.navScenarios?.normal;
+    if (navNormal !== undefined) {
+      // 逐帧的铁证：5 片必须分 5 次到，一次到齐同样"内容正确"但流式体验为零。
+      if ((navNormal.tokens ?? 0) < 2) {
+        failures.push('正常场景只收到 1 帧 —— 退化成了"攒齐再发"，逐帧断言失去意义');
+      }
+      if (navNormal.text !== FAKE_NORMAL_TEXT) {
+        failures.push(
+          `正常场景拼出来的正文与上游写出的不一致（${JSON.stringify(navNormal.text)} ≠ ` +
+            `${JSON.stringify(FAKE_NORMAL_TEXT)}）—— 分片重组有偏差`,
+        );
+      }
+      // usage 的 completionTokens 与文本长度一致：不一致就是那个"看着正常的错数字"。
+      if (navNormal.usageCompletion !== navNormal.textLength) {
+        failures.push(
+          `正常场景 completionTokens(${String(navNormal.usageCompletion)}) ` +
+            `与文本长度(${String(navNormal.textLength)}) 不一致`,
+        );
+      }
+    }
+
+    // 假上游那一侧的观察 —— 这是"停止真的断了连接"唯一能拿到证据的地方：
+    // 客户端自己说"我 abort 了"不算，得看**对端**有没有看见。
+    if (fake !== null) {
+      if (!fake.stats.clientGone.includes('abort')) {
+        failures.push('假上游没观察到 abort 场景的连接关闭 —— "停止"只停了渲染，连接还挂着');
+      }
+      if (fake.stats.doneSent.includes('silent-close') || fake.stats.doneSent.includes('killed')) {
+        failures.push('假上游在不该发 done 的场景发了 done —— 场景造错了，截断判定被绕过');
+      }
+      if (fake.stats.logins < 1) failures.push('假上游一次 guest 登录都没收到 —— 登录没走真通道');
+    }
+
+    // 全部终态之后不该还有活跃 run（abort 场景收尾不干净会留在这）
+    const stillActive = activeRunCount();
+    if (stillActive !== 0) {
+      failures.push(`自检结束时仍有 ${stillActive} 个活跃 run —— 有调度没摘干净`);
+    }
   } catch (err) {
     failures.push(`探针执行失败：${String(err)}`);
+  }
+
+  // 假上游收尾。关不掉不算失败（它只是个夹具），但必须被看见。
+  if (fake !== null) {
+    try {
+      await fake.close();
+    } catch (err) {
+      warnings.push(`假 SSE 上游没能干净关闭：${String(err)}`);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────

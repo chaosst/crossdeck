@@ -63,6 +63,15 @@ export default function App() {
   const [runningRunId, setRunningRunId] = useState<string | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /**
+   * 流式阶段 —— 单独一个状态，不复用 `runningRunId` + `actionError` 的组合。
+   *
+   * 为什么不让自检去推：终态有三个（done / error / 还在跑），"没在跑"同时对应
+   * "跑完了"和"从没跑过"；靠派生值会逼自检去猜。而 `data-stage` 是自检与
+   * 主进程状态、订阅到的最后一帧做**三处一致**比对的那个锚点 —— 猜出来的锚点
+   * 比没有锚点更糟。
+   */
+  const [streamStage, setStreamStage] = useState<'idle' | 'streaming' | 'done' | 'error'>('idle');
 
   // ── M4：工作区与文件浏览 ──
   const [paused, setPaused] = useState(false);
@@ -155,6 +164,7 @@ export default function App() {
           setUsage(null);
           setPaused(false);
           setRunningRunId(event.runId);
+          setStreamStage('streaming');
           // 帧率探针跟着流一起起停：测的就是"这段流式期间画面跟不跟得上"
           startStreamFpsProbe();
           break;
@@ -170,6 +180,7 @@ export default function App() {
           setRunningRunId(null);
           setPaused(false);
           setUsage(event.usage);
+          setStreamStage('done');
           // 终态才停探针并上报 —— 中途停会把"半程帧率"当成整段读数
           void samplePerf({ streamFps: stopStreamFpsProbe() })
             .then(setPerf)
@@ -179,6 +190,7 @@ export default function App() {
           setRunningRunId(null);
           setPaused(false);
           setActionError(`[${event.code}] ${event.message}`);
+          setStreamStage('error');
           void samplePerf({ streamFps: stopStreamFpsProbe() })
             .then(setPerf)
             .catch(() => {});
@@ -771,11 +783,15 @@ export default function App() {
                 下游每 16ms flush 一次（对齐一帧）；队列超 2000 字符时合并中间态而非丢尾部。
                 暂停走反向通道 `agent:control`（invoke，有 ack），暂停期间**零推送**。
               </p>
-              <pre className="mt-3 min-h-[88px] whitespace-pre-wrap rounded border border-[#e5e2da] bg-[#faf9f6] p-3 font-mono text-[12px] leading-relaxed text-[#33302b]">
+              <pre
+                data-testid="stream-text"
+                data-len={streamText.length}
+                className="mt-3 min-h-[88px] whitespace-pre-wrap rounded border border-[#e5e2da] bg-[#faf9f6] p-3 font-mono text-[12px] leading-relaxed text-[#33302b]"
+              >
                 {streamText || (runningRunId ? '等待首个 token…' : '(尚未发送)')}
               </pre>
               <div className="mt-2 flex items-center gap-4 text-[11px] text-[#8a857c]">
-                <span>
+                <span data-testid="stream-stage" data-stage={streamStage}>
                   状态：{runningRunId ? (paused ? '已暂停（背压中）' : '流式中') : '空闲'}
                 </span>
                 {usage && (
