@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>crossdeck · 登录</title>
+    <!--
+      为什么是**另一个 HTML 入口**而不是 `index.html?login=1`：
+
+      `src/main.ts` 是模块顶层一路挂到底的（`const shell = await createWebPorts(...)`
+      后面直接 append），要加个条件分支就得把 300 行全部塞进 else —— 那种改动
+      把一个"界面稿"变成了对试金石包的结构性修改，回滚成本不对等。
+
+      多一个 entry 就把代价降到 0：index.html / main.ts 一个字都不用动。
+
+      ⚠️ 与 index.html 的差别（刻意）：这里**锁浅色**（`color-scheme: light`）。
+        壳是壳，界面稿是界面稿 —— 三端要"同一套视觉"，跟随系统深色会让它当场分叉。
+    -->
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #f6f5f2;
+        --card: #ffffff;
+        --line: #e2dfd7;
+        --line-soft: #eae7e0;
+        --field: #fbfaf8;
+        --field-line: #dcd8ce;
+        --text: #1c1b19;
+        --sub: #5c5750;
+        --dim: #8a857c;
+        --faint: #a09a90;
+        --accent: #1f6b3a;
+        --accent-hover: #1a5c31;
+        --accent-active: #164d29;
+        --amber: #c98a3c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', 'Microsoft YaHei',
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* 环境光：两团低透明色斑。纯装饰，不携带信息。 */
+      .glow {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .glow i {
+        position: absolute;
+        display: block;
+        border-radius: 999px;
+        filter: blur(64px);
+      }
+      .glow i:first-child {
+        left: -96px;
+        top: -112px;
+        width: 420px;
+        height: 420px;
+        background: rgba(31, 107, 58, 0.07);
+      }
+      .glow i:last-child {
+        right: -80px;
+        bottom: -128px;
+        width: 380px;
+        height: 380px;
+        background: rgba(201, 138, 60, 0.08);
+      }
+
+      .page {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100%;
+        padding: 40px 24px;
+      }
+
+      .shell {
+        width: 100%;
+        max-width: 400px;
+      }
+
+      /* ── 品牌 lockup ── */
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .mark {
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #2b8a4e 0%, #1a5030 100%);
+        color: #fff;
+        font-size: 19px;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .wordmark {
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        line-height: 1.25;
+      }
+      .tagline {
+        font-size: 12px;
+        color: var(--dim);
+      }
+
+      /* ── 表单卡 ── */
+      .card {
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--card);
+        box-shadow:
+          0 1px 2px rgba(28, 27, 25, 0.04),
+          0 16px 40px -16px rgba(28, 27, 25, 0.18);
+      }
+      .card h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .card .lead {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: var(--dim);
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      /* 首个字段与引导文案的间距 —— 对齐 Electron 端的 mt-5 (20px) */
+      .card .field:first-of-type {
+        margin-top: 20px;
+      }
+      .field + .field {
+        margin-top: 16px;
+      }
+      .field > label {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--sub);
+      }
+      .control {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      input {
+        width: 100%;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid var(--field-line);
+        border-radius: 10px;
+        background: var(--field);
+        color: var(--text);
+        font: inherit;
+        outline: none;
+        transition:
+          border-color 0.15s,
+          background 0.15s,
+          box-shadow 0.15s;
+      }
+      input::placeholder {
+        color: var(--faint);
+      }
+      input:focus {
+        border-color: var(--accent);
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(31, 107, 58, 0.16);
+      }
+      #password {
+        padding-right: 44px;
+      }
+
+      /* 眼睛图标按钮：与 Electron 端的 lucide Eye/EyeOff 同尺寸同位置 */
+      .reveal {
+        position: absolute;
+        right: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--dim);
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .reveal:hover {
+        background: #f2f0ea;
+        color: var(--sub);
+      }
+      .reveal svg {
+        display: block;
+        width: 16px;
+        height: 16px;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .primary,
+      .secondary {
+        width: 100%;
+        height: 40px;
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s;
+      }
+      .primary {
+        margin-top: 20px;
+        border: 0;
+        background: var(--accent);
+        color: #fff;
+      }
+      .primary:hover {
+        background: var(--accent-hover);
+      }
+      .primary:active {
+        background: var(--accent-active);
+      }
+
+      .split {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 16px 0;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .split::before,
+      .split::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: var(--line-soft);
+      }
+
+      .secondary {
+        border: 1px solid #cfd9cf;
+        background: #fff;
+        color: var(--accent);
+      }
+      .secondary:hover {
+        border-color: var(--accent);
+        background: #f4f8f5;
+      }
+
+      .guest-hint {
+        margin: 8px 0 0;
+        text-align: center;
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      /* ── 环境状态条 ── */
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 20px;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .status i {
+        flex: none;
+        display: block;
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--amber);
+      }
+      .status .ver {
+        margin-left: auto;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow" aria-hidden="true"><i></i><i></i></div>
+    <div class="page" id="app"></div>
+    <script type="module" src="/src/login.ts"></script>
+  </body>
+</html>

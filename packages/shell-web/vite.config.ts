@@ -20,6 +20,19 @@ export default defineConfig({
     // 目标环境明确（现代浏览器），不为老浏览器降级
     target: 'esnext',
     sourcemap: true,
+    /**
+     * 两个 HTML 入口：`index.html`（试金石演示页）+ `login.html`（登录界面稿）。
+     *
+     * 多入口而不是单页加 query 分支，是为了让登录页**完全不碰** main.ts ——
+     * 见 login.html 头部那段注释。`web-selfcheck.mjs` 打的是 index.html，
+     * 因此自检链路一行都不用改（`dist/site/index.html` 仍在原地）。
+     */
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        login: 'login.html',
+      },
+    },
   },
   server: { port: 5199, strictPort: true },
   preview: { port: 4173, strictPort: true },
