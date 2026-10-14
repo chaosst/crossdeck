@@ -69,7 +69,7 @@ pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 点击
 | 命令 | 说明 |
 |---|---|
 | `pnpm dev` | esbuild 打 main/preload → Electron 主进程**内嵌启动 Vite** → 加载 dev server |
-| `pnpm start` | 全量构建（含 renderer）→ 通过自称协议 `app://` 加载产物 |
+| `pnpm start` | 全量构建（含 renderer）→ 通过自称协议 `app://` 加载产物。加 `--devtools` 可对**产物**开调试器（默认不带） |
 | `pnpm dev:web` | 单独的 Vite dev server（:5199）—— core 在浏览器里跑，不需要 Electron |
 | `pnpm verify` | `tsc -b` → core 铁律扫描 → 13 个类型负例 → 72 条 scope / 83 条 agent / 72 条 update 断言 |
 | `pnpm selfcheck` | 启动应用 → 真实上下文探针 → 截图 → 写报告 → 归档到 `docs/evidence/` |
@@ -1069,6 +1069,8 @@ core 的 `PathGuard` / `WorkspaceStore` 在鸿蒙侧是"能编译、能跑单测
 | 无头 / CI 下 `GPU process isn't usable`（退出码 3） | 受限会话里 Chromium 沙箱起不来 viz 层。自检已关 GPU；若仍崩，加 `--no-sandbox`（见下方说明） |
 | `pnpm selfcheck` 出完报告却不返回 | 同一原因：主进程卡在残留的 GPU/viz 子进程上，`app.exit()` 结束不掉。**这不该由应用自己救**（事件循环已停摆，兜底 `setTimeout` 不会触发）。所以 `launch.mjs` 监听应用的 `[selfcheck] DONE ok=… code=…` 哨兵，据此强杀进程树并以**判定结果**而不是"能不能退出"作为退出码 |
 | `pack:win` 报 `Cannot read properties of undefined (reading 'ReadWrite')` | `app-builder-lib` 需要的 `@electron/get` 版本不对。报错里**不含任何包名**，只有读 `out/util/electronGet.js` 才看得出是依赖问题。根因是 npmmirror 对 `@electron/get@^3.0.0` 挑成 3.0.0（上游源挑 3.1.0，而 `ElectronDownloadCacheMode` 是 3.1.0 才有的）。仓库已用 `pnpm-workspace.yaml` 的 `overrides` 钉住 3.1.0；**判断解析结果是否可疑时，换 `--registry=https://registry.npmjs.org/` 对照一次最快** |
+| `pnpm dev` 下想开控制台 / 看元素 | 已经开着：`--dev` 会自动打开 DevTools（`detach` 模式，**不压缩页面视口**），任意模式下 F12 或 Ctrl+Shift+I 开关，产物用 `pnpm start --devtools`。生产形态默认不挂调试入口 —— DevTools 等于渲染层里一个能跑任意脚本、能直接调 preload 那座桥的控制台 |
+| 点进 DevTools 窗口后按 F12 没反应 | **不是漏配，是 Electron 侧的限制**（实测 44.4.5）：`devToolsWebContents` 的 `getType()` 是 `remote`，`before-input-event` **一条都不发**；DevTools 窗口也不在 `BrowserWindow.getAllWindows()` 里，`getOwnerBrowserWindow()` 返回的是被检查的主窗口 —— 没有可达通道。**社区"再给 devToolsWebContents 挂一份监听"的答案在本版本无效**，所以代码里没有那段死机制。此时点 DevTools 自己的关闭按钮，或先点回应用窗口再按 F12 |
 | 白屏、控制台报 CSP 拦截 | 生产 CSP 的 `script-src` 只有 `'self'`。注意 Vite 的 modulepreload polyfill 会注入行内脚本，已在 `vite.config.ts` 关掉 |
 | `selfcheck:web` 报「找不到 Chromium 内核浏览器」 | 它只用系统已有的 Edge / Chrome。装在别处时用 `CROSSDECK_BROWSER=<路径>` 指定 |
 | `selfcheck:web` 的 OPFS 断言失败 | OPFS 需要**安全上下文**：只认 `https://` 或 `127.0.0.1` / `localhost`。脚本起的就是 `127.0.0.1` —— 换成局域网 IP 会失效 |

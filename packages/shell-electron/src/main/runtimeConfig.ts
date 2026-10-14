@@ -27,6 +27,15 @@ export interface RuntimeConfig {
    * 写死就会出现"两份 9.9.9"，改一处忘一处时探针会拿错误的原因失败。
    */
   readonly expectVersion: string | null;
+  /**
+   * 允许并自动打开 DevTools（`--dev` 下隐式打开，也可单独传 `--devtools`）。
+   *
+   * 为什么不做成"永远允许"：DevTools 是渲染进程里一个能执行任意脚本、
+   * 能读到 preload 暴露的整座桥的控制台。webPreferences 收得再严，
+   * 发布产物里默认挂着它，等于从另一扇门把安全收益还回去一半。
+   * 所以默认关闭，只对"开发中"与"显式要求调试"两种情况放行。
+   */
+  readonly devtools: boolean;
 }
 
 export function parseArgs(argv: readonly string[]): RuntimeConfig {
@@ -36,6 +45,7 @@ export function parseArgs(argv: readonly string[]): RuntimeConfig {
     selfcheck: argv.includes('--selfcheck'),
     updateProbe: argv.includes('--update-feed-probe'),
     expectVersion: expectArg === undefined ? null : expectArg.slice('--expect-version='.length),
+    devtools: argv.includes('--devtools'),
   };
 }
 
@@ -46,7 +56,13 @@ export function parseArgs(argv: readonly string[]): RuntimeConfig {
  * 逐个透传 config 会让每个函数签名都被这个与业务无关的开关污染。
  * 代价是"隐式依赖"，所以只允许 runtimeConfig.ts 一处持有，读取一律走 runtimeConfig()。
  */
-let current: RuntimeConfig = { dev: false, selfcheck: false, updateProbe: false, expectVersion: null };
+let current: RuntimeConfig = {
+  dev: false,
+  selfcheck: false,
+  updateProbe: false,
+  expectVersion: null,
+  devtools: false,
+};
 
 export function setRuntimeConfig(next: RuntimeConfig): void {
   current = next;
