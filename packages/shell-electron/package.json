@@ -9,12 +9,16 @@
   "dependencies": {
     "@crossdeck/contract": "workspace:*",
     "@crossdeck/core": "workspace:*",
+    "@reduxjs/toolkit": "^2.13.0",
     "electron-updater": "^6.8.9",
+    "lucide-react": "^1.54.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "react-redux": "^9.3.0"
   },
   "scripts": {
     "setup:electron": "node scripts/setup-electron.mjs",
+    "icons": "node scripts/icons.mjs",
     "build": "node scripts/build.mjs",
     "build:main": "node scripts/build.mjs --main-only",
     "start": "node scripts/build.mjs && node scripts/launch.mjs",
@@ -22,6 +26,8 @@
     "selfcheck": "node scripts/build.mjs && node scripts/launch.mjs --selfcheck",
     "pack:win": "node scripts/build.mjs && electron-builder --win --config electron-builder.yml",
     "typecheck": "tsc -b",
+    "verify:store": "node scripts/verify-renderer-store.mjs",
+    "verify:resume-chat": "node scripts/verify-resume-chat-subscribe.mjs",
     "verify:update-feed": "node scripts/verify-update-feed.mjs"
   },
   "devDependencies": {

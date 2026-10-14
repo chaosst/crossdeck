@@ -1,24 +1,21 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Provider } from 'react-redux';
 import App from './App';
+import Login from './pages/Login';
+import { store } from './store';
 import './styles.css';
-
-/**
- * 渲染层入口。
- *
- * StrictMode 开着是刻意的：它在开发模式下会**故意重复执行** effect
- * （挂载 → 卸载 → 再挂载）。这是检验 bridge.on 退订逻辑是否正确的免费测试 ——
- * 如果 preload 的 on 没有返回可用的取消函数，
- * StrictMode 下就会看到「一条流被渲染两次」。生产构建不会双跑。
- */
 
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('#root 不存在 —— index.html 与入口脚本不匹配');
 }
 
+// 入口分流：#/login → 登录界面，其余走 App。Provider 必须在分流点之上。
+const route = window.location.hash.replace(/^#\/?/, '');
+
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <Provider store={store}>{route === 'login' ? <Login /> : <App />}</Provider>
   </StrictMode>,
 );

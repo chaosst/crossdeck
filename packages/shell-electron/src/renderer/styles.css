@@ -4,6 +4,77 @@
    但把 @source 写出来可以避免"改完 class 没生效"这类排查成本。 */
 @source './**/*.{tsx,ts,html}';
 
+/* 语义色 token —— 色值唯一真源，改色只改这里。
+   `static` 声明"所有 token 都进产物"：只在 TS 内联 var() 里被引用的 token
+   （如 markdown 渲染那几处），Tailwind 从 CSS 文本里看不见这个引用。
+   实测 Tailwind 4.3.3 下默认 @theme 也会全量输出，故当前非必需；留着是把它变成约定而非巧合。 */
+@theme static {
+  /* 表面 */
+  --color-canvas: #f6f5f2;
+  --color-surface: #faf9f6;
+  --color-surface-sunken: #fbfaf8;
+  --color-surface-hover: #f2f0ea;
+  --color-surface-selected: #f0eee8;
+
+  /* 文字 */
+  --color-ink: #1c1b19;
+  --color-ink-body: #33302b;
+  --color-ink-soft: #3c3933;
+  --color-ink-dim: #4a4640;
+  --color-ink-muted: #5c5750;
+  --color-ink-faint: #7a756c;
+  --color-muted: #8a857c;
+  --color-hint: #a09a90;
+
+  /* 描边与分割 */
+  --color-line: #e2dfd7;
+  --color-line-input: #dcd8ce;
+  --color-line-subtle: #e5e2da;
+  --color-line-button: #d9d5cb;
+  --color-line-badge: #dfdbd2;
+  --color-line-divider: #eae7e0;
+  --color-line-list: #eeebe4;
+  --color-line-table: #efece5;
+  --color-line-strong: #b9b3a5;
+  --color-line-brand: #cfd9cf;
+
+  /* 品牌与点缀 */
+  --color-brand: #1f6b3a;
+  --color-brand-hover: #1a5c31;
+  --color-brand-active: #164d29;
+  --color-brand-light: #2b8a4e;
+  --color-brand-deep: #1a5030;
+  --color-brand-tint: #e3f5e8;
+  --color-brand-tint-soft: #f4f8f5;
+  --color-amber: #c98a3c;
+
+  /* 危险 */
+  --color-danger: #a12626;
+  --color-danger-tint: #fbe4e4;
+  --color-danger-surface: #fdf6f6;
+  --color-danger-line: #e8c9c9;
+}
+
+/* 图标基线类 —— 用 Tailwind 4 的 `@utility` 定义，不是包一层 React 组件。
+ *
+ * 图标是纯表现，包组件只会挡住 lucide 自己的 props（size / strokeWidth /
+ * absoluteStrokeWidth）。而这里要固定下来的只有两件 Tailwind 内置拼起来
+ * 要写三个类、且最容易漏的事：
+ *
+ *   · flex: none      —— flex 行里的图标一旦被压缩就会变形，最高频的翻车点
+ *   · vertical-align  —— 内联在文字旁的图标要往下沉一点，才和字面视觉居中
+ *
+ * 尺寸**刻意不设**：留给调用点的 `size-*` 显式决定。一个类只承担一个职责，
+ * 和调用点的覆盖关系才不会有歧义。
+ *
+ * 颜色同样不设：lucide 的 stroke 是 currentColor，图标天然继承父级文字颜色，
+ * `text-[#8a857c]` 直接生效 —— 给默认色反而会把这个继承掐掉。
+ */
+@utility icon {
+  flex: none;
+  vertical-align: -0.125em;
+}
+
 html,
 body,
 #root {
