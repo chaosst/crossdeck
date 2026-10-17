@@ -29,7 +29,17 @@ delete env['ELECTRON_RUN_AS_NODE'];
 
 const forwarded = process.argv.slice(2);
 const isSelfCheck = forwarded.includes('--selfcheck');
-console.log(`[launch] ${electronPath} . ${forwarded.join(' ')}`);
+
+/**
+ * Chromium / inspector 层的开关必须排在应用路径**之前**。
+ * 放在 `.` 后面会被当成传给应用的 argv：`--inspect` 不开调试端口，
+ * `--remote-debugging-port` 直接被无视 —— 症状都是"看起来正常但调试器连不上"。
+ */
+const isChromiumFlag = (a) => a.startsWith('--inspect') || a.startsWith('--remote-debugging');
+const inspectorFlags = forwarded.filter(isChromiumFlag);
+const electronArgs = [...inspectorFlags, '.', ...forwarded.filter((a) => !isChromiumFlag(a))];
+
+console.log(`[launch] ${electronPath} ${electronArgs.join(' ')}`);
 
 /**
  * 强杀整棵进程树。
@@ -69,7 +79,7 @@ let child;
 
 if (isSelfCheck) {
   // 自检要读 stdout 才能看到哨兵，所以这一路改成 pipe 并原样转发（dev / start 不受影响）
-  child = spawn(electronPath, ['.', ...forwarded], {
+  child = spawn(electronPath, electronArgs, {
     cwd: PKG_ROOT,
     stdio: ['inherit', 'pipe', 'inherit'],
     env,
@@ -128,7 +138,7 @@ if (isSelfCheck) {
     process.exit(1);
   });
 } else {
-  child = spawn(electronPath, ['.', ...forwarded], {
+  child = spawn(electronPath, electronArgs, {
     cwd: PKG_ROOT,
     stdio: 'inherit',
     env,

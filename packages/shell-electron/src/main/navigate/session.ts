@@ -10,15 +10,31 @@
  */
 
 import { AppError } from '@crossdeck/contract';
-import type { GuestLoginResult, NavigateStatus, NavigateUpstreamStatus } from '@crossdeck/contract';
-import { loginGuest, revokeUpstreamSession } from './auth.js';
+import type {
+  GuestLoginResult,
+  LoginChallengeNeeded,
+  LoginCodeResult,
+  NavigateStatus,
+  NavigateUpstreamStatus,
+} from '@crossdeck/contract';
+import {
+  createChallenge,
+  fetchChallengeImage,
+  fetchChallengeNeeded,
+  login,
+  loginGuest,
+  revokeUpstreamSession,
+  type LoginBody,
+} from './auth.js';
 import { navigateSettings } from './settings.js';
 import { navigateTokenStore } from './tokenStore.js';
 import { normalizeUpstreamUrl } from './upstream.js';
 
+const BASE_URL = 'http://127.0.0.1:3001'
+
 /** 当前上游根地址；`null` = 脚本上游（离线可跑）。 */
-export function currentUpstreamUrl(): string | null {
-  return navigateSettings.getUpstreamUrl();
+export function currentBaseUrl(): string | null {
+  return BASE_URL
 }
 
 /**
@@ -26,7 +42,7 @@ export function currentUpstreamUrl(): string | null {
  * "说自己在连 navigate 却没给地址"这种自相矛盾的状态。
  */
 export function upstreamStatus(): NavigateUpstreamStatus {
-  const url = currentUpstreamUrl();
+  const url = currentBaseUrl();
   return url === null ? { kind: 'scripted', baseUrl: null } : { kind: 'navigate', baseUrl: url };
 }
 
@@ -51,7 +67,7 @@ export function setUpstreamUrl(raw: string | null): NavigateStatus {
  * "点了登录却连的是脚本"是这个项目最不该出现的诚实性缺口。
  */
 export async function loginAsGuest(): Promise<GuestLoginResult> {
-  const url = currentUpstreamUrl();
+  const url = currentBaseUrl();
   if (url === null) {
     throw new AppError(
       'BAD_REQUEST',
@@ -65,6 +81,64 @@ export async function loginAsGuest(): Promise<GuestLoginResult> {
   return { role: session.role, expiresInSec: session.expiresInSec, expiresAt: session.expiresAt };
 }
 
+export async function getLoginCode(): Promise<LoginCodeResult> {
+  const url = currentBaseUrl();
+  if (url === null) {
+    throw new AppError(
+      'BAD_REQUEST',
+      '还没有配置上游地址 —— 先填一个（形如 http://127.0.0.1:3001），再点登录',
+    );
+  }
+
+  const cfg = { baseUrl: url, now: () => Date.now() };
+  const ticket = await createChallenge(cfg);
+  challengeSid = ticket.sid;
+
+  const bmp = await fetchChallengeImage(cfg, ticket.challengeId, ticket.sid);
+  return {
+    challengeId: ticket.challengeId,
+    imageDataUrl: `data:image/bmp;base64,${Buffer.from(bmp).toString('base64')}`,
+  };
+}
+
+/**
+ * 验证码会话（`navigate_sid`）。取图与提交登录都要带它，只活主进程内存：
+ * 不落盘、不进 tokenStore、不跨 IPC —— 与 token 同一条隔离纪律。
+ */
+let challengeSid: string | null = null;
+
+/** 该 IP / 该账号当前是否需要校验码。探测失败**不阻断**登录 —— 只是不提前展开而已。 */
+export async function challengeNeeded(username: string): Promise<LoginChallengeNeeded> {
+  const url = currentBaseUrl();
+  if (url === null) {
+    throw new AppError('BAD_REQUEST', '还没有配置上游地址 —— 无法判断是否需要校验码');
+  }
+  const needChallenge = await fetchChallengeNeeded({ baseUrl: url, now: () => Date.now() }, username);
+  return { needChallenge };
+}
+
+export async function loginAsUser(body: LoginBody): Promise<GuestLoginResult> {
+  const url = currentBaseUrl();
+  if (url === null) {
+    throw new AppError(
+      'BAD_REQUEST',
+      '还没有配置上游地址 —— 先填一个（形如 http://127.0.0.1:3001），再点登录',
+    );
+  }
+  try {
+    const session = await login(body, {
+      baseUrl: url,
+      now: () => Date.now(),
+      sid: challengeSid ?? undefined,
+    });
+    navigateTokenStore.set(session);
+    return { role: session.role, expiresInSec: session.expiresInSec, expiresAt: session.expiresAt };
+  } finally {
+    // 挑战是一次性的：无论成功还是答错，这张题都已被上游消费，留着只会误导下一次提交。
+    challengeSid = null;
+  }
+}
+
 /**
  * 登出。
  *
@@ -74,7 +148,7 @@ export async function loginAsGuest(): Promise<GuestLoginResult> {
  * 上游那边有没有真的吊销，如实写进 `note`。
  */
 export async function logout(): Promise<NavigateStatus> {
-  const url = currentUpstreamUrl();
+  const url = currentBaseUrl();
   const token = navigateTokenStore.get();
 
   navigateTokenStore.clear();

@@ -1,25 +1,125 @@
 import { Eye, EyeOff } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { describeIpcError, getLoginValidCode, loginNavigate, loginNavigateGuest, probeChallengeNeeded } from '../api';
+import { logger } from '../utils/logger';
 
 /**
- * 登录界面（**只有界面，不接任何登录逻辑**）。
- *
- * 入口是 hash `#/login` —— 由 `main.tsx` 在渲染前分流，`App.tsx` 一行没改。
- * 这样做的理由和"独立窗口"是同一个：界面稿不该把主链路绑上，回滚成本应当是 0。
- *
- * ⚠️ 这里刻意**不碰**任何 IPC / api.ts：
- *   · 不读 `getNavigateStatus()` —— 一次 invoke 都不发，纯静态界面；
- *   · 底部那行「上游」是**写死的演示值**，不是探测结果。真接上时要换成
- *     `getNavigateStatus().upstream`，并且仍然必须如实区分
- *     「navigate 真上游」与「脚本上游」—— 见 README §"UI 必须标注当前是哪个上游"。
- *
- * 视觉上是三端**同一套**语言（浅暖底 + 白卡 + 绿主色），数值与
- * `packages/shell-web/login.html`、`packages/shell-ohos/.../pages/Login.ets` 一一对应。
- * 改一处请同步另外两处，否则"统一设计"会在一次小改动里悄悄散架。
+ * 登录界面
  */
 export default function Login() {
   /** 纯表现：眼睛按钮只改 input 的 type，不做任何校验。 */
   const [showPassword, setShowPassword] = useState(false);
+
+  const [password, setPassword] = useState("");
+
+  const [account, setAccount] = useState("");
+  
+  const [code, setCode] = useState("");
+
+  const [challengeId, setChallengeId] = useState("")
+
+  /** 验证码图片的 data URL —— 字节由主进程转发，渲染层不直连上游。 */
+  const [challengeImg, setChallengeImg] = useState("")
+
+  /** 是否展示校验码区。上游只在连续失败后才要求它，所以默认不展示。 */
+  const [needChallenge, setNeedChallenge] = useState(false)
+
+  /** 登录失败的原文 —— 不吞掉它，否则按钮看起来像"点了没反应"。 */
+  const [error, setError] = useState<string | null>(null);
+
+  // 拉取一张新校验码（服务端种 httpOnly sid cookie，答案只在服务端图片里）
+  async function refreshChallenge() {
+    const res = await getLoginValidCode()
+    if (!res.challengeId) return false;
+    setChallengeId(res.challengeId)
+    setChallengeImg(res.imageDataUrl)
+    setCode("");
+    return true;
+  }
+
+  /**
+   * 展开校验码区并领一张题。
+   *
+   * 已经有题就不换 —— 用户可能正在输入，换图等于把他刚看清的字符作废。
+   */
+  async function openChallenge() {
+    setNeedChallenge(true)
+    if (challengeId !== '') return
+    await refreshChallenge().catch(() => {
+      // 领题失败不阻断登录：用户仍可提交，上游会再要一次
+    })
+  }
+
+  /**
+   * 预判：该 IP / 该账号是否已被要求校验码（先前失败过、或刷新页面后状态仍在）。
+   *
+   * 与网页端一致 —— 不等提交被打回才让用户发现要填校验码。
+   */
+  async function probe(username: string) {
+    try {
+      const res = await probeChallengeNeeded(username)
+      if (res.needChallenge) await openChallenge()
+    } catch {
+      // 探测失败静默：它只是"提前告知"的优化，不是登录的前置条件
+    }
+  }
+
+  // 进页面按 IP 维度探一次
+  useEffect(() => {
+    void probe('')
+  }, [])
+
+  // 账号维度：输入停顿 300ms 后再探，避免每敲一个字都打一次上游
+  useEffect(() => {
+    if (account === '') return
+    const timer = setTimeout(() => void probe(account), 300)
+    return () => clearTimeout(timer)
+  }, [account])
+
+
+  const loginAsUser = async () => {
+    try {
+      if (!account) {
+        setError('账号不能为空')
+        return ;
+      } 
+      if (!password) {
+        setError('密码不能为空')
+        return ;
+      } 
+      setError(null)
+      await loginNavigate({
+        username: account,
+        password,
+        // 只在真的要校验码时才带上 —— 空 challengeId 会被上游当成"提交了无效挑战"
+        ...(needChallenge ? { challengeId, code } : {}),
+      })
+      // 登录成功 —— 退出 #/login，入口的 hashchange 监听据此切回 App。
+      window.location.hash = '#/'
+    } catch (err) {
+      const described = describeIpcError(err)
+      setError(described.text)
+      // 上游在 detail 里回了 NEED_CHALLENGE → 展开校验码区并换一张新题
+      if (described.detail?.split('|').includes('NEED_CHALLENGE') === true) {
+        setChallengeId('')
+        await openChallenge()
+      }
+      logger.error('Login', 'loginAsUser error with:', described.text)
+    }
+  }
+
+  const loginAsGuest = async () => {
+    try {
+      setError(null)
+      await loginNavigateGuest()
+      // 登录成功 —— 退出 #/login，入口的 hashchange 监听据此切回 App。
+      window.location.hash = '#/'
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : JSON.stringify(err)
+      setError(msg)
+      logger.error('Login', 'loginAsGuest error with:', msg)
+    }
+  }
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center overflow-y-auto bg-canvas px-6 py-10 text-ink">
@@ -33,11 +133,11 @@ export default function Login() {
         {/* ── 品牌 lockup ── 字标 + 一句定位，三端同款 */}
         <div className="mb-6 flex items-center gap-3">
           <div className="flex size-10 flex-none items-center justify-center rounded-xl bg-gradient-to-br from-brand-light to-brand-deep text-[19px] font-semibold leading-none text-white shadow-sm">
-            c
+            N
           </div>
           <div className="min-w-0">
-            <div className="text-[17px] font-semibold leading-tight tracking-tight">crossdeck</div>
-            <div className="text-[12px] text-muted">跨端桌面工程 · 流式问答</div>
+            <div className="text-[17px] font-semibold leading-tight tracking-tight">Navigate Desk</div>
+            <div className="text-[12px] text-muted">简历问答</div>
           </div>
         </div>
 
@@ -56,9 +156,11 @@ export default function Login() {
             <input
               id="login-account"
               name="account"
+              value={account}
               type="text"
               autoComplete="username"
               placeholder="请输入账号"
+              onInput={(e) => setAccount(e.currentTarget.value)}
               className="h-10 rounded-[10px] border border-line-input bg-surface-sunken px-3 text-[13px] text-ink outline-none transition placeholder:text-hint focus:border-brand focus:bg-white focus:ring-2 focus:ring-brand/20"
             />
           </div>
@@ -72,9 +174,11 @@ export default function Login() {
               <input
                 id="login-password"
                 name="password"
+                value={password}
                 type={showPassword ? 'text' : 'password'}
                 autoComplete="current-password"
                 placeholder="请输入密码"
+                onInput={(e) => setPassword(e.currentTarget.value)}
                 className="h-10 w-full rounded-[10px] border border-line-input bg-surface-sunken pl-3 pr-11 text-[13px] text-ink outline-none transition placeholder:text-hint focus:border-brand focus:bg-white focus:ring-2 focus:ring-brand/20"
               />
               <button
@@ -93,9 +197,29 @@ export default function Login() {
             </div>
           </div>
 
+          {/* 只在被要求时出现：上游按 IP / 账号的失败次数决定，不是每个访客都要填 */}
+          {needChallenge && (
+          <div className="mt-4 flex flex-col gap-1.5" id="challenge-box">
+            <label htmlFor="code" className="text-[12px] font-medium text-ink-muted">
+              校验码
+            </label>
+            <div className="relative flex items-center">
+              <img id="challenge-img" alt="校验码" src={challengeImg} />
+              <button type="button" id="challenge-refresh" className='cursor-pointer' title="看不清？换一张" onClick={() => refreshChallenge()}>↻</button>
+            </div>
+            <input type="text" id="code" name="code" maxLength={4} placeholder="输入图中的 4 位字符"
+              value={code}
+              onInput={(e) => setCode(e.currentTarget.value)}
+              className="h-10 w-full rounded-[10px] border border-line-input bg-surface-sunken pl-3 pr-11 text-[13px] text-ink outline-none transition placeholder:text-hint focus:border-brand focus:bg-white focus:ring-2 focus:ring-brand/20"
+            />
+            <div className="text-hint text-[10px]">连续登录失败触发，请完成校验后再试</div>
+          </div>
+          )}
+
           {/* 主操作 —— 登录逻辑待接，这里只画 */}
           <button
             type="button"
+            onClick={loginAsUser}
             className="mt-5 h-10 w-full rounded-[10px] bg-brand text-[13px] font-medium text-white transition hover:bg-brand-hover active:bg-brand-active"
           >
             登录
@@ -110,6 +234,7 @@ export default function Login() {
           {/* 次操作 —— 对齐上游已有的 guest 通道（仍未接线） */}
           <button
             type="button"
+            onClick={loginAsGuest}
             className="h-10 w-full rounded-[10px] border border-line-brand bg-white text-[13px] font-medium text-brand transition hover:border-brand hover:bg-brand-tint-soft"
           >
             获取体验账号
@@ -117,16 +242,16 @@ export default function Login() {
           <p className="mt-2 text-center text-[11px] text-hint">
             以 guest 身份进入，无需密码 · 有效期由部署方决定
           </p>
-        </section>
 
-        {/* ── 环境状态条 ──
-            UI **必须**如实报上游是哪一种；这里是界面稿，所以是写死的演示值，
-            真接线时换成 `getNavigateStatus().upstream.kind`。 */}
-        <div className="mt-5 flex items-center gap-2 text-[11px] text-hint">
-          <span aria-hidden className="size-1.5 flex-none rounded-full bg-amber" />
-          上游：脚本（离线可跑，不是真上游）
-          <span className="ml-auto font-mono">v1.0.0</span>
-        </div>
+          {error !== null && (
+            <p
+              data-testid="login-error"
+              className="mt-3 whitespace-pre-wrap rounded-[10px] border border-danger-line bg-danger-surface px-3 py-2 text-[11px] leading-relaxed text-danger"
+            >
+              {error}
+            </p>
+          )}
+        </section>
       </main>
     </div>
   );

@@ -1,12 +1,14 @@
 import { configureStore } from '@reduxjs/toolkit';
 import sessions from './slices/sessions';
 import stream from './slices/stream';
+import user from './slices/user';
 
 /** 渲染层唯一的 store，只放客户端 UI 状态。 */
 export const store = configureStore({
   reducer: {
     sessions,
     stream,
+    user
   },
 });
 

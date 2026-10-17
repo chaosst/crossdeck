@@ -4,6 +4,8 @@ import type {
   DirEntry,
   GuestLoginResult,
   IpcErrorCode,
+  LoginChallengeNeeded,
+  LoginCodeResult,
   NavigateStatus,
   PerfSampleInput,
   PerfSnapshot,
@@ -131,6 +133,18 @@ export async function setNavigateUpstream(upstreamUrl: string | null): Promise<N
 
 export async function loginNavigateGuest(): Promise<GuestLoginResult> {
   return window.bridge.invoke(IPC.navigateLoginGuest);
+}
+
+export async function loginNavigate(body: object): Promise<GuestLoginResult> {
+  return window.bridge.invoke(IPC.navigateLogin, body);
+}
+
+export async function getLoginValidCode(): Promise<LoginCodeResult> {
+  return window.bridge.invoke(IPC.navigateLoginCode)
+}
+
+export async function probeChallengeNeeded(username = ''): Promise<LoginChallengeNeeded> {
+  return window.bridge.invoke(IPC.navigateChallengeNeeded, username === '' ? {} : { username })
 }
 
 export async function logoutNavigate(): Promise<NavigateStatus> {

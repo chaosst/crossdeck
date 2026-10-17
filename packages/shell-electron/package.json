@@ -23,6 +23,7 @@
     "build:main": "node scripts/build.mjs --main-only",
     "start": "node scripts/build.mjs && node scripts/launch.mjs",
     "dev": "node scripts/build.mjs --main-only && node scripts/launch.mjs --dev",
+    "debug:main": "node scripts/build.mjs && node scripts/launch.mjs --inspect=9229",
     "selfcheck": "node scripts/build.mjs && node scripts/launch.mjs --selfcheck",
     "pack:win": "node scripts/build.mjs && electron-builder --win --config electron-builder.yml",
     "typecheck": "tsc -b",

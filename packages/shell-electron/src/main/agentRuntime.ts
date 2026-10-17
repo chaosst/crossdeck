@@ -5,7 +5,7 @@ import type { AgentDeps, ModelPort } from '@crossdeck/core';
 import { AgentRuntime, DEFAULT_FIRST_FRAME_TIMEOUT_MS, ScriptedModel } from '@crossdeck/core';
 import { createNavigateClient } from './navigate/client.js';
 import { NavigateModel } from './navigate/model.js';
-import { currentUpstreamUrl, upstreamStatus } from './navigate/session.js';
+import { currentBaseUrl, upstreamStatus } from './navigate/session.js';
 import { navigateTokenStore } from './navigate/tokenStore.js';
 
 /**
@@ -60,7 +60,7 @@ function navigateModelFor(url: string): ModelPort {
 
 const model: ModelPort = {
   stream(req, sink) {
-    const url = currentUpstreamUrl();
+    const url = currentBaseUrl();
     return url === null ? scripted.stream(req, sink) : navigateModelFor(url).stream(req, sink);
   },
 };

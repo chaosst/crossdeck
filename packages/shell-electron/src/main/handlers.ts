@@ -7,6 +7,8 @@ import type {
   DirEntry,
   FileStat,
   GuestLoginResult,
+  LoginChallengeNeeded,
+  LoginCodeResult,
   NavigateStatus,
   PerfSnapshot,
   SessionMeta,
@@ -17,10 +19,19 @@ import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } fro
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
-import { loginAsGuest, logout, navigateStatus, setUpstreamUrl } from './navigate/session.js';
+import {
+  challengeNeeded,
+  getLoginCode,
+  loginAsGuest,
+  loginAsUser,
+  logout,
+  navigateStatus,
+  setUpstreamUrl,
+} from './navigate/session.js';
 import { notePerfSample, readPerfSnapshot } from './perf.js';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
+import type { LoginBody } from './navigate/auth.js';
 
 /**
  * main 侧全部 handler。
@@ -240,6 +251,16 @@ export function registerHandlers(): number {
   );
 
   defineInvoke(IPC.navigateLoginGuest, async (): Promise<GuestLoginResult> => loginAsGuest());
+
+  defineInvoke(IPC.navigateLogin, async (req: LoginBody): Promise<GuestLoginResult> => loginAsUser(req));
+
+  defineInvoke(IPC.navigateLoginCode, async (): Promise<LoginCodeResult> => getLoginCode());
+
+  defineInvoke(
+    IPC.navigateChallengeNeeded,
+    async (req: { username?: string }): Promise<LoginChallengeNeeded> =>
+      challengeNeeded(req.username ?? ''),
+  );
 
   defineInvoke(IPC.navigateLogout, async (): Promise<NavigateStatus> => logout());
 

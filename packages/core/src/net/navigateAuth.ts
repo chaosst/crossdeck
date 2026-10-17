@@ -16,6 +16,14 @@
 
 import type { IpcErrorCode, NavigateAuthDetail, NavigateRole } from '@crossdeck/contract';
 
+/** user 登录端点。取自上游 `src/server/login.ts`。 */
+export const NAVIGATE_LOGIN_PATH = '/api/login';
+
+export const NAVIGATE_LOGIN_CODE_PATH = '/api/login/challenge';
+
+/** 校验码是否需要（按 IP 或按账号维度）。上游 `src/server/login.ts` 的同源判定。 */
+export const NAVIGATE_CHALLENGE_NEEDED_PATH = '/api/login/challenge-needed';
+
 /** guest 登录端点。取自上游 `src/server/login.ts`。 */
 export const NAVIGATE_LOGIN_GUEST_PATH = '/api/login/guest';
 

@@ -3,7 +3,7 @@ import type { DirEntry, FileStat, SessionMeta, SystemInfo } from './entities.js'
 import type { WindowKind } from './capability.js';
 import type { UpdateInfo } from './update.js';
 import type { PerfSampleInput, PerfSnapshot } from './perf.js';
-import type { GuestLoginResult, NavigateStatus } from './navigate.js';
+import type { GuestLoginResult, LoginChallengeNeeded, LoginCodeResult, NavigateStatus } from './navigate.js';
 import type { Workspace } from './workspace.js';
 
 /**
@@ -45,6 +45,10 @@ export interface IpcInvokeMap {
   [IPC.navigateStatus]: { req: void; res: NavigateStatus };
   [IPC.navigateSetUpstream]: { req: { upstreamUrl: string | null }; res: NavigateStatus };
   [IPC.navigateLoginGuest]: { req: void; res: GuestLoginResult };
+  [IPC.navigateLogin]: { req: object; res: GuestLoginResult };
+  [IPC.navigateLoginCode]: { req: void; res: LoginCodeResult };
+  /** `username` 可选：不带 = 只按 IP 维度探测；带上 = 叠加该账号维度。 */
+  [IPC.navigateChallengeNeeded]: { req: { username?: string }; res: LoginChallengeNeeded };
   [IPC.navigateLogout]: { req: void; res: NavigateStatus };
 
   /**

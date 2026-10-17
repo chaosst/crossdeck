@@ -68,6 +68,11 @@ export const IPC = {
   navigateSetUpstream: 'navigate:set-upstream',
   /** **guest 登录**（免密）。凭据只落主进程，响应里没有 token。 */
   navigateLoginGuest: 'navigate:login-guest',
+  /** **user 登录**。凭据只落主进程，响应里没有 token。 */
+  navigateLogin: 'navigate:login',
+  navigateLoginCode: 'navigate:login-code',
+  /** 是否需要校验码（按 IP 或按账号维度探测）。 */
+  navigateChallengeNeeded: 'navigate:challenge-needed',
   navigateLogout: 'navigate:logout',
 
   // ── 性能采样 ────────────────────────────────────────────

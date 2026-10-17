@@ -76,3 +76,24 @@ export interface GuestLoginResult {
   readonly expiresInSec: number;
   readonly expiresAt: number;
 }
+
+export interface LoginCodeResult {
+  readonly challengeId: string
+  /**
+   * 验证码图片（BMP）的 data URL。
+   *
+   * 上游把图片与会话 cookie 绑死（无 cookie 一律 404），而 cookie 只能由
+   * 主进程持有 —— 所以图片字节经主进程转发，渲染层不再直连上游拼 URL。
+   */
+  readonly imageDataUrl: string
+}
+
+/**
+ * 当前是否需要校验码。
+ *
+ * 与上游 `/api/login/challenge-needed` 同源判定（IP 失败次数或该账号失败次数达阈值）。
+ * 渲染层据此决定校验码区显不显示 —— 不能等到提交失败才让用户发现这件事。
+ */
+export interface LoginChallengeNeeded {
+  readonly needChallenge: boolean
+}

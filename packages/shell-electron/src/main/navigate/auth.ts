@@ -15,7 +15,10 @@
 import { AppError } from '@crossdeck/contract';
 import {
   NAVIGATE_AUTH_TIMEOUT_MS,
+  NAVIGATE_CHALLENGE_NEEDED_PATH,
+  NAVIGATE_LOGIN_CODE_PATH,
   NAVIGATE_LOGIN_GUEST_PATH,
+  NAVIGATE_LOGIN_PATH,
   NAVIGATE_LOGOUT_PATH,
   describeNavigateLoginFailure,
   errorMessage,
@@ -32,6 +35,8 @@ export interface NavigateAuthConfig {
   readonly timeoutMs?: number | undefined;
   /** 注入 fetch（测试用）；缺省用全局的。 */
   readonly fetchImpl?: typeof fetch | undefined;
+  /** 验证码会话 sid（`createChallenge` 返回的）。带它才能过上游的校验码复核。 */
+  readonly sid?: string | undefined;
 }
 
 /**
@@ -91,6 +96,175 @@ async function fetchWithTimeout(
     // 必须清：漏了的话每次登录都会留一个 10s 的定时器，进程退出前一直挂着。
     clearTimeout(timer);
   }
+}
+
+/** 上游的会话 cookie 名（绑定验证码：取图与提交登录都必须带它）。 */
+const SID_COOKIE = 'navigate_sid';
+
+/** 从 Set-Cookie 里解出上游的会话 sid；没有就是上游契约变了，大声失败。 */
+function readSidCookie(res: Response): string | null {
+  const lines = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  for (const line of lines) {
+    const m = new RegExp(`(?:^|;)\\s*${SID_COOKIE}=([^;]+)`).exec(line);
+    if (m !== null) return decodeURIComponent(m[1]!);
+  }
+  return null;
+}
+
+/** 创建验证码挑战的完整凭据：challengeId + 绑定它的会话 sid（只活主进程）。 */
+export interface ChallengeTicket {
+  readonly challengeId: string;
+  readonly sid: string;
+}
+
+/**
+ * 领取验证码挑战。
+ *
+ * 上游领挑战时会种 httpOnly 的 `navigate_sid`，此后取图、提交登录都要带它；
+ * 丢了 sid，取图是 404 `{"error":"not found"}`，提交是 401「校验码缺失」。
+ */
+export async function createChallenge(cfg: NavigateAuthConfig): Promise<ChallengeTicket> {
+  const endpoint = `${cfg.baseUrl}${NAVIGATE_LOGIN_CODE_PATH}`;
+  const res = await fetchWithTimeout(cfg, endpoint, { method: 'GET' });
+
+  if (!res.ok) {
+    const failure = describeNavigateLoginFailure(res.status, parseRetryAfter(res.headers.get('retry-after')));
+    throw new AppError(failure.code, failure.message, failure.detail);
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await res.json()) as Record<string, unknown>;
+  } catch (err) {
+    throw new AppError('UPSTREAM', `上游登录响应不是合法 JSON：${errorMessage(err)}`);
+  }
+
+  const challengeId = payload.challengeId;
+  if (typeof challengeId !== 'string' || challengeId === '') {
+    throw new AppError('UPSTREAM', '上游没有返回 challengeId');
+  }
+  const sid = readSidCookie(res);
+  if (sid === null) {
+    throw new AppError('UPSTREAM', `上游没有种会话 cookie（${SID_COOKIE}）—— 无法取回验证码图片`);
+  }
+  return { challengeId, sid };
+}
+
+/** 验证码图片（BMP 原始字节）。 */
+export async function fetchChallengeImage(
+  cfg: NavigateAuthConfig,
+  challengeId: string,
+  sid: string,
+): Promise<Uint8Array> {
+  const endpoint = `${cfg.baseUrl}${NAVIGATE_LOGIN_CODE_PATH}/${encodeURIComponent(challengeId)}/image`;
+  const res = await fetchWithTimeout(cfg, endpoint, {
+    method: 'GET',
+    headers: { cookie: `${SID_COOKIE}=${encodeURIComponent(sid)}`, accept: 'image/bmp' },
+  });
+
+  if (!res.ok) {
+    throw new AppError('UPSTREAM', `取验证码图片失败：HTTP ${res.status}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/**
+ * 当前是否需要校验码（上游 `/api/login/challenge-needed`）。
+ *
+ * 与提交时的判定完全同源（上游 server 侧同一个 `needsChallenge`），
+ * 所以"探测说需要"和"提交被要求校验码"不会各说各话。
+ */
+export async function fetchChallengeNeeded(cfg: NavigateAuthConfig, username: string): Promise<boolean> {
+  const q = username === '' ? '' : `?username=${encodeURIComponent(username)}`;
+  const res = await fetchWithTimeout(cfg, `${cfg.baseUrl}${NAVIGATE_CHALLENGE_NEEDED_PATH}${q}`, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+
+  if (!res.ok) {
+    throw new AppError('UPSTREAM', `探测校验码状态失败：HTTP ${res.status}`);
+  }
+  const payload = (await res.json()) as { needChallenge?: unknown };
+  return payload.needChallenge === true;
+}
+
+export interface LoginBody {
+  username?: string;
+  password?: string; 
+  next?: string; 
+  challengeId?: string; 
+  code?: string;
+}
+
+/**
+ * 登录失败 —— 在原有错误码/文案之外，额外带上"上游要不要校验码"。
+ *
+ * detail 用 `|` 拼上 `NEED_CHALLENGE`：它是唯一能原样穿过 IPC 的结构化字段
+ * （见 contract 的 SerializedError），渲染层据此决定展开校验码区。
+ */
+export class LoginFailureError extends AppError {
+  readonly needChallenge: boolean;
+
+  constructor(failure: { code: AppError['code']; message: string; detail?: string }, needChallenge: boolean) {
+    super(
+      failure.code,
+      failure.message,
+      needChallenge ? joinDetail(failure.detail, NEED_CHALLENGE_DETAIL) : failure.detail,
+    );
+    this.needChallenge = needChallenge;
+  }
+}
+
+/** `SerializedError.detail` 里表示"需要校验码"的标记。 */
+export const NEED_CHALLENGE_DETAIL = 'NEED_CHALLENGE';
+
+function joinDetail(base: string | undefined, extra: string): string {
+  return base === undefined || base === '' ? extra : `${base}|${extra}`;
+}
+
+/**
+ * 用户登录。失败时抛 `LoginFailureError` —— 不只是错误，还带着"要不要展示校验码"。
+ */
+export async function login(body: LoginBody, cfg: NavigateAuthConfig): Promise<NavigateSession> {
+  const endpoint = `${cfg.baseUrl}${NAVIGATE_LOGIN_PATH}`;
+  const res = await fetchWithTimeout(cfg, endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      // 上游在需要校验码时会复核这个会话 cookie；不带它提交一律 401「校验码缺失」。
+      ...(cfg.sid === undefined ? {} : { cookie: `${SID_COOKIE}=${encodeURIComponent(cfg.sid)}` }),
+    },
+    // 上游读 `req.body ?? {}`；带一个空对象比空 body 稳（express.json 对空 body 会报解析错）。
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const failure = describeNavigateLoginFailure(res.status, parseRetryAfter(res.headers.get('retry-after')));
+    // 429 也带 needChallenge: false；401 才可能是 true。读不出来就当 false，不臆测。
+    let needChallenge = false;
+    try {
+      const payload = (await res.json()) as { needChallenge?: unknown };
+      needChallenge = payload.needChallenge === true;
+    } catch {
+      // 非 JSON 响应（反代 HTML 等）—— 这里不该抛新错覆盖掉真正的状态码语义
+    }
+    throw new LoginFailureError(failure, needChallenge);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    // 200 但 body 不是 JSON —— 多半是地址指到了一个静态站点 / 反代返回了 HTML。
+    throw new AppError('UPSTREAM', `上游登录响应不是合法 JSON：${errorMessage(err)}`);
+  }
+
+  const parsed = parseGuestLoginResponse(payload, cfg.now());
+  if (!parsed.ok) {
+    throw new AppError('UPSTREAM', `上游登录响应不符合契约：${parsed.message}`);
+  }
+  return parsed.session;
 }
 
 /**

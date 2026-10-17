@@ -21,6 +21,7 @@ const HASH_BY_KIND: Record<WindowKind, string> = {
   session: '#/session',
   settings: '#/settings',
   inspector: '#/inspector',
+  login: '#/login'
 };
 
 const BASE_WEB_PREFERENCES = {

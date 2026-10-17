@@ -30,4 +30,4 @@ export type Capability =
   | 'notify.system';
 
 /** 窗口种类。各壳自行映射到本平台的窗口概念（BrowserWindow / 子窗口 / window.open）。 */
-export type WindowKind = 'main' | 'session' | 'settings' | 'inspector';
+export type WindowKind = 'main' | 'session' | 'settings' | 'inspector' | 'login';
