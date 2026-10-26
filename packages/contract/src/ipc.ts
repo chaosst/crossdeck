@@ -10,6 +10,15 @@ export const IPC = {
   sessionCreate: 'session:create',
   sessionList: 'session:list',
   sessionDelete: 'session:delete',
+  /**
+   * 一个会话的完整内容（消息 + 各自的事件）。
+   *
+   * 列表通道只给 `SessionMeta`：列表页不需要正文，而流式期间每轮结束都要刷新列表，
+   * 正文跟着列表走等于反复传输同一份大文本。正文按需取。
+   */
+  sessionMessages: 'session:messages',
+  /** 单向推送（main → renderer）：某个会话变了。只报会话 id 与原因，不塞数据。 */
+  sessionChanged: 'session:changed',
 
   // ── Agent 运行 ──────────────────────────────────────────
   agentRun: 'agent:run',
@@ -41,6 +50,10 @@ export const IPC = {
    *    接线（或删除）留到 M4.5 与 fs 事件流一起做。
    */
   fsWatch: 'fs:watch',
+
+  // ── 文档（上传到 navigate 知识库，仅 admin）──────────────
+  /** 选文件并上传。文件选择由 main 弹框完成 —— 渲染层不碰本地绝对路径。 */
+  documentUpload: 'document:upload',
 
   // ── Agent 流控（背压，走 invoke 才有 ack 语义）─────────────
   agentControl: 'agent:control',

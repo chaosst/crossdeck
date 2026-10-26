@@ -10,6 +10,7 @@
 export * from './capability.js';
 export * from './ipc.js';
 export * from './entities.js';
+export * from './session.js';
 export * from './stream.js';
 export * from './invoke-map.js';
 export * from './push-map.js';

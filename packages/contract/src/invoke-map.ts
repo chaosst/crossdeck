@@ -1,5 +1,6 @@
 import { IPC } from './ipc.js';
 import type { DirEntry, FileStat, SessionMeta, SystemInfo } from './entities.js';
+import type { SessionMessageDetail, UploadedDocument } from './session.js';
 import type { WindowKind } from './capability.js';
 import type { UpdateInfo } from './update.js';
 import type { PerfSampleInput, PerfSnapshot } from './perf.js';
@@ -19,6 +20,9 @@ export interface IpcInvokeMap {
   [IPC.sessionCreate]: { req: { title?: string }; res: SessionMeta };
   [IPC.sessionList]: { req: void; res: SessionMeta[] };
   [IPC.sessionDelete]: { req: { sessionId: string }; res: void };
+  [IPC.sessionMessages]: { req: { sessionId: string }; res: SessionMessageDetail[] };
+
+  [IPC.documentUpload]: { req: { sessionId: string }; res: UploadedDocument };
 
   [IPC.agentRun]: { req: { sessionId: string; input: string }; res: { runId: string } };
   [IPC.agentAbort]: { req: { runId: string }; res: void };

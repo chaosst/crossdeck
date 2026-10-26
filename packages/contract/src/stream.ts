@@ -13,6 +13,10 @@ export type AgentStreamEvent =
   | { type: 'tool'; runId: string; callId: string; name: string; args: unknown }
   | { type: 'tool_end'; runId: string; callId: string; ok: boolean; ms: number }
   | { type: 'plan'; runId: string; steps: PlanStep[] }
+  /** 引用来源，已去重保序。空数组不发。 */
+  | { type: 'sources'; runId: string; sources: string[] }
+  /** 端侧动作。`url` 在执行前必须过协议与 host 白名单。 */
+  | { type: 'action'; runId: string; actionId: string; label: string; url: string }
   | { type: 'done'; runId: string; usage: Usage }
   | { type: 'error'; runId: string; code: ErrorCode; message: string };
 
