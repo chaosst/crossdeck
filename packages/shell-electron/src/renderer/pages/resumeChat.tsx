@@ -62,7 +62,9 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
         case 'tool':
         case 'tool_end':
         case 'plan':
-          // M3 会把工具调用与 plan 步骤渲染成时间线，这里先忽略
+        case 'sources':
+        case 'action':
+          // 先忽略；工具/引用/动作卡片的渲染随会话面板一起做
           break;
         case 'done':
           store.dispatch(streamFinished(event.usage));
@@ -71,8 +73,8 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
           store.dispatch(streamFailed(`[${event.code}] ${event.message}`));
           break;
         default:
-          // 契约里新增事件类型而这里忘了处理 → 编译期就报错，不会静默漏掉
-          assertNever(event as never);
+          // 不加 `as never`：它就是穷尽检查本身，转成 never 等于把检查关掉
+          assertNever(event);
       }
     });
   }

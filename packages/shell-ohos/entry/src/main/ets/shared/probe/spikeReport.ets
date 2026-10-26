@@ -38,6 +38,10 @@ function summarizeEvent(event: AgentStreamEvent): string {
       return `tool_end:${event.ok ? 'ok' : 'fail'}`;
     case 'plan':
       return `plan:${event.steps.length}`;
+    case 'sources':
+      return `sources:${event.sources.length}`;
+    case 'action':
+      return `action:${event.actionId}`;
     case 'done':
       return `done`;
     case 'error':
