@@ -30,9 +30,10 @@ import { navigateSettings } from './settings.js';
 import { navigateTokenStore } from './tokenStore.js';
 import { normalizeUpstreamUrl } from './upstream.js';
 
+/** 暂时固定：配置入口已砍，恢复时改回读 navigateSettings。 */
 const BASE_URL = 'http://127.0.0.1:3001'
 
-/** 当前上游根地址；`null` = 脚本上游（离线可跑）。 */
+/** 当前上游根地址；当前固定，`null` = 脚本上游那条分支暂不可达。 */
 export function currentBaseUrl(): string | null {
   return BASE_URL
 }
