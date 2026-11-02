@@ -15,12 +15,13 @@ import type {
   SystemInfo,
   Workspace,
 } from '@crossdeck/contract';
-import { SessionStore, WorkspaceStore, createPathGuard, resolveInWorkspace } from '@crossdeck/core';
+import { WorkspaceStore, createPathGuard, resolveInWorkspace } from '@crossdeck/core';
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
 import {
   challengeNeeded,
+  currentAccountKey,
   getLoginCode,
   loginAsGuest,
   loginAsUser,
@@ -29,6 +30,8 @@ import {
   setUpstreamUrl,
 } from './navigate/session.js';
 import { notePerfSample, readPerfSnapshot } from './perf.js';
+import { sessionRepo, ensureSessionRepo, sessionAccountKey } from './sessionDb/index.js';
+import { broadcastSessionChange } from './sessionEvents.js';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
 import type { LoginBody } from './navigate/auth.js';
@@ -59,8 +62,6 @@ const ELECTRON_CAPABILITIES: readonly Capability[] = [
  */
 const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
 
-const sessions = new SessionStore();
-
 /**
  * 工作区授权表（M4 从 main 下沉到 core）。
  *
@@ -78,6 +79,18 @@ const guard = createPathGuard(workspaces, {
 });
 
 const fsPort = createFsPort({ guard, workspaces });
+
+/**
+ * 登录 / 登出后对齐本地库：换账号就换库文件。
+ *
+ * 不换库的后果是第二个账号看得见第一个账号的会话 —— 而"每账号一个库"正是为了防它。
+ */
+function syncSessionScope(): void {
+  const key = currentAccountKey();
+  if (sessionAccountKey() === key) return;
+  ensureSessionRepo(key);
+  broadcastSessionChange({ reason: 'switched' });
+}
 
 /**
  * 把 `{ workspaceId, path }` 变成一条**已授权的绝对路径**。
@@ -137,21 +150,28 @@ export function registerHandlers(): number {
   });
 
   // ── 会话 ────────────────────────────────────────────────
-  defineInvoke(IPC.sessionList, async (): Promise<SessionMeta[]> => sessions.list());
+  defineInvoke(IPC.sessionList, async (): Promise<SessionMeta[]> => sessionRepo().listSessions());
 
-  defineInvoke(IPC.sessionCreate, async (req) => sessions.create(req));
+  defineInvoke(IPC.sessionCreate, async (req) => {
+    const created = sessionRepo().createSession(req.title);
+    broadcastSessionChange({ sessionId: created.id, reason: 'created' });
+    return created;
+  });
 
   defineInvoke(IPC.sessionDelete, async (req): Promise<void> => {
-    if (!sessions.delete(req.sessionId)) {
+    if (!sessionRepo().deleteSession(req.sessionId)) {
       // 明确用 NOT_FOUND 而不是静默成功 —— 删不掉和删成功是两件事，
       // 前端需要能区分（前者要提示用户刷新列表）。
       throw new AppError('NOT_FOUND', `会话不存在：${req.sessionId}`);
     }
+    broadcastSessionChange({ sessionId: req.sessionId, reason: 'deleted' });
   });
+
+  defineInvoke(IPC.sessionMessages, async (req) => sessionRepo().listMessages(req.sessionId));
 
   // ── Agent 运行 ──────────────────────────────────────────
   defineInvoke(IPC.agentRun, async (req, ctx) => {
-    if (!sessions.get(req.sessionId)) {
+    if (sessionRepo().getSession(req.sessionId) === null) {
       throw new AppError('NOT_FOUND', `会话不存在：${req.sessionId}`);
     }
     const { runId } = runScripted(ctx.senderWindowId, req.sessionId, req.input);
@@ -250,9 +270,17 @@ export function registerHandlers(): number {
     setUpstreamUrl(req.upstreamUrl),
   );
 
-  defineInvoke(IPC.navigateLoginGuest, async (): Promise<GuestLoginResult> => loginAsGuest());
+  defineInvoke(IPC.navigateLoginGuest, async (): Promise<GuestLoginResult> => {
+    const result = await loginAsGuest();
+    syncSessionScope();
+    return result;
+  });
 
-  defineInvoke(IPC.navigateLogin, async (req: LoginBody): Promise<GuestLoginResult> => loginAsUser(req));
+  defineInvoke(IPC.navigateLogin, async (req: LoginBody): Promise<GuestLoginResult> => {
+    const result = await loginAsUser(req);
+    syncSessionScope();
+    return result;
+  });
 
   defineInvoke(IPC.navigateLoginCode, async (): Promise<LoginCodeResult> => getLoginCode());
 
@@ -262,7 +290,11 @@ export function registerHandlers(): number {
       challengeNeeded(req.username ?? ''),
   );
 
-  defineInvoke(IPC.navigateLogout, async (): Promise<NavigateStatus> => logout());
+  defineInvoke(IPC.navigateLogout, async (): Promise<NavigateStatus> => {
+    const status = await logout();
+    syncSessionScope();
+    return status;
+  });
 
   // ── 性能采样（M6-1）──────────────────────────────────────
   // 一次调用两件事：把渲染层带上来的采样点记账，再返回当前快照。

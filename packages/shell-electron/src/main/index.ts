@@ -9,9 +9,11 @@ import {
 } from './appProtocol.js';
 import { createWindow, setDevServerUrl } from './windows.js';
 import { registerHandlers, registeredChannelList, grantWorkspaceForSelfCheck } from './handlers.js';
-import { activeUpstream, stopAllRuns } from './agentRuntime.js';
+import { activeUpstream, flushAllRuns, stopAllRuns } from './agentRuntime.js';
 import { startDevServer } from './devServer.js';
 import { prepareScopeFixture, runSelfCheck } from './selfcheck.js';
+import { closeSessionRepo, configureSessionDb, ensureSessionRepo } from './sessionDb/index.js';
+import { currentAccountKey } from './navigate/session.js';
 import { runUpdateFeedProbe } from './updateProbe.js';
 import { scheduleStartupUpdateCheck } from './updater.js';
 
@@ -29,6 +31,10 @@ import { scheduleStartupUpdateCheck } from './updater.js';
  *   7. 注册 IPC handler
  *   8. 开窗
  */
+
+/** 本地 id 生成器：前缀 + 时间 + 随机，够本地唯一。 */
+const makeId = (prefix: string): string =>
+  `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 
 const config = parseArgs(process.argv);
 setRuntimeConfig(config);
@@ -88,6 +94,18 @@ app.whenReady().then(async () => {
       // 生产：app:// 协议 + 严格 CSP
       serveRenderer(join(__dirname, '..', 'renderer'));
     }
+
+    // 会话库要在注册 handler **之前**打开：迁移失败就不该起窗口，
+    // 否则用户点开第一个会话才会看到「库版本不兼容」。
+    // 自检用独立目录 —— 写进用户真实 userData 会让假会话永久留在列表里。
+    configureSessionDb({
+      dir: config.selfcheck
+        ? join(PKG_ROOT, 'dist', 'selfcheck', 'sessions')
+        : join(app.getPath('userData'), 'sessions'),
+      deps: { now: () => Date.now(), newId: makeId },
+    });
+    const repo = ensureSessionRepo(currentAccountKey());
+    console.log(`[crossdeck] 会话库：${currentAccountKey()}（${repo.listSessions().length} 个会话）`);
 
     const channelCount = registerHandlers();
     console.log(`[crossdeck] 已注册 IPC 通道 ${channelCount} 个：${registeredChannelList().join(', ')}`);
@@ -167,6 +185,9 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopAllRuns();
+  // 关库前先把没落盘的草稿写完，顺序反了会丢最后一个节流窗口。
+  flushAllRuns();
+  closeSessionRepo();
 });
 
 // 主进程异常不能静默 —— 没有这个的话进程会直接消失，日志里什么都不留
