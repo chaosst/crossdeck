@@ -11,7 +11,7 @@ export type AgentStreamEvent =
   | { type: 'start'; runId: string; at: number }
   | { type: 'token'; runId: string; text: string }
   | { type: 'tool'; runId: string; callId: string; name: string; args: unknown }
-  | { type: 'tool_end'; runId: string; callId: string; ok: boolean; ms: number }
+  | { type: 'tool_end'; runId: string; callId: string; ok: boolean; ms: number; resultPreview?: string }
   | { type: 'plan'; runId: string; steps: PlanStep[] }
   /** 引用来源，已去重保序。空数组不发。 */
   | { type: 'sources'; runId: string; sources: string[] }

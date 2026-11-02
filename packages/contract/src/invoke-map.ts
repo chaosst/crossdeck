@@ -40,6 +40,9 @@ export interface IpcInvokeMap {
   [IPC.fsStat]: { req: { workspaceId: string; path: string }; res: FileStat };
   [IPC.agentControl]: { req: { runId: string; type: 'pause' | 'resume' }; res: void };
 
+  /** 打开动作卡片的外链。URL 由 main 校验（协议 + host 白名单）后才交给系统浏览器。 */
+  [IPC.actionOpen]: { req: { url: string }; res: void };
+
   /**
    * navigate 上游配置 + 登录。
    *

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, webContents } from 'electron';
+import { app, BrowserWindow, dialog, shell, webContents } from 'electron';
 import { promises as fsp } from 'node:fs';
 import { arch, release } from 'node:os';
 import { AppError, IPC, PATH_DENY_MESSAGES } from '@crossdeck/contract';
@@ -15,13 +15,21 @@ import type {
   SystemInfo,
   Workspace,
 } from '@crossdeck/contract';
-import { WorkspaceStore, createPathGuard, resolveInWorkspace } from '@crossdeck/core';
+import {
+  WorkspaceStore,
+  checkOpenUrl,
+  createPathGuard,
+  describeOpenUrlReason,
+  hostOfUrl,
+  resolveInWorkspace,
+} from '@crossdeck/core';
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
 import { defineInvoke, markRunAborted, registeredChannels } from './ipc.js';
 import {
   challengeNeeded,
   currentAccountKey,
+  currentBaseUrl,
   getLoginCode,
   loginAsGuest,
   loginAsUser,
@@ -168,6 +176,18 @@ export function registerHandlers(): number {
   });
 
   defineInvoke(IPC.sessionMessages, async (req) => sessionRepo().listMessages(req.sessionId));
+
+  // ── 动作卡片：外链打开 ───────────────────────────────────
+  // URL 绝不直接丢给系统浏览器 —— 否则等于把「打开任意网址」的能力交给上游。
+  defineInvoke(IPC.actionOpen, async (req): Promise<void> => {
+    const base = currentBaseUrl();
+    const host = base === null ? null : hostOfUrl(base);
+    const decision = checkOpenUrl(req.url, host === null ? [] : [host]);
+    if (!decision.ok) {
+      throw new AppError('FORBIDDEN', describeOpenUrlReason(decision.reason));
+    }
+    await shell.openExternal(decision.url);
+  });
 
   // ── Agent 运行 ──────────────────────────────────────────
   defineInvoke(IPC.agentRun, async (req, ctx) => {

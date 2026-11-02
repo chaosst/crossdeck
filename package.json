@@ -32,6 +32,7 @@
     "verify:core-assembler": "node scripts/verify-core-assembler.mjs",
     "verify:core-scheduler": "node scripts/verify-core-scheduler.mjs",
     "verify:session-repo": "node scripts/verify-session-repo.mjs",
+    "verify:openurl": "node scripts/verify-core-openurl.mjs",
     "verify:model": "node scripts/verify-model-stream.mjs",
     "verify:agent": "node scripts/verify-core-agent.mjs",
     "verify:update": "node scripts/verify-core-update.mjs",
@@ -41,7 +42,7 @@
     "verify:shared-fresh": "node scripts/verify-shared-fresh.mjs",
     "verify:ohos-judge": "node packages/shell-ohos/scripts/verify-ohos-judge.mjs",
     "verify:theme": "node scripts/verify-theme.mjs",
-    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:sse && pnpm verify:core-migrate && pnpm verify:core-assembler && pnpm verify:core-scheduler && pnpm verify:session-repo && pnpm verify:model && pnpm verify:agent && pnpm verify:update && pnpm verify:navigate-client && pnpm verify:navigate-client-ohos && pnpm verify:navigate-auth && pnpm verify:shared-fresh && pnpm verify:ohos-judge && pnpm verify:theme",
+    "verify": "pnpm typecheck && pnpm lint && pnpm verify:core-purity && pnpm verify:ipc && pnpm verify:lint && pnpm verify:scope && pnpm verify:sse && pnpm verify:core-migrate && pnpm verify:core-assembler && pnpm verify:core-scheduler && pnpm verify:session-repo && pnpm verify:openurl && pnpm verify:model && pnpm verify:agent && pnpm verify:update && pnpm verify:navigate-client && pnpm verify:navigate-client-ohos && pnpm verify:navigate-auth && pnpm verify:shared-fresh && pnpm verify:ohos-judge && pnpm verify:theme",
     "verify:update-feed": "pnpm --filter @crossdeck/shell-electron verify:update-feed",
     "sync:ohos": "node packages/shell-ohos/scripts/sync-shared.mjs",
     "verify:ohos": "node packages/shell-ohos/scripts/verify-ohos.mjs"

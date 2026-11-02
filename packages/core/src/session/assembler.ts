@@ -118,7 +118,7 @@ export function foldStreamEvent(
         callId: call.callId,
         name: call.name,
         argsPreview: call.argsPreview,
-        resultPreview: '',
+        resultPreview: truncatePreview(event.resultPreview ?? ''),
         ok: event.ok,
         ms: event.ms,
       };
@@ -184,4 +184,11 @@ export function foldStreamEvent(
 
 function assertNeverEvent(value: never): never {
   throw new Error(`未处理的流事件：${JSON.stringify(value)}`);
+}
+
+/** 结果预览的截断长度，与 navigate 侧同口径。 */
+const RESULT_PREVIEW_MAX = 200;
+
+function truncatePreview(text: string): string {
+  return text.length <= RESULT_PREVIEW_MAX ? text : `${text.slice(0, RESULT_PREVIEW_MAX)}…`;
 }

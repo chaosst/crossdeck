@@ -27,6 +27,15 @@ export type NavigateAction =
   | { readonly kind: 'authoritative'; readonly text: string }
   /** 引用来源（去重前）。**不拼进正文**，由 UI 单独展示。 */
   | { readonly kind: 'sources'; readonly sources: readonly string[] }
+  /** 一次**已完成**的工具调用（上游 `event: tool`）。 */
+  | {
+      readonly kind: 'tool';
+      readonly callId: string;
+      readonly name: string;
+      readonly argsPreview: string;
+      readonly resultPreview: string;
+      readonly ok: boolean;
+    }
   /** 本轮结束。 */
   | { readonly kind: 'done' }
   /** 上游错误（已解出可读消息）。 */
@@ -38,6 +47,7 @@ export type NavigateAction =
 export const NAVIGATE_EVENTS = {
   token: 'token',
   sources: 'sources',
+  tool: 'tool',
   done: 'done',
   error: 'error',
   /** done 之前可选的**权威全文**帧（仅当增量拼接 ≠ 权威全文时才出现） */
@@ -58,6 +68,9 @@ export function mapNavigateFrame(frame: SseFrame): NavigateAction {
 
     case NAVIGATE_EVENTS.sources:
       return { kind: 'sources', sources: decodeStringArray(frame.data) };
+
+    case NAVIGATE_EVENTS.tool:
+      return decodeTool(frame.data);
 
     case NAVIGATE_EVENTS.done:
       // 不走 JSON 分支：字面量比对。上游若写成带引号也认 —— 宽容但不猜测。
@@ -115,4 +128,25 @@ export function dedupeSources(sources: readonly string[]): string[] {
     out.push(s);
   }
   return out;
+}
+
+/** 解工具帧；形状不对就当作未识别（宁可上报，不要猜）。 */
+function decodeTool(data: string): NavigateAction {
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    const name = parsed.name;
+    if (typeof name !== 'string' || name.length === 0) {
+      return { kind: 'unknown', event: NAVIGATE_EVENTS.tool, raw: data };
+    }
+    return {
+      kind: 'tool',
+      callId: typeof parsed.callId === 'string' && parsed.callId.length > 0 ? parsed.callId : name,
+      name,
+      argsPreview: typeof parsed.argsPreview === 'string' ? parsed.argsPreview : '',
+      resultPreview: typeof parsed.resultPreview === 'string' ? parsed.resultPreview : '',
+      ok: parsed.ok !== false,
+    };
+  } catch {
+    return { kind: 'unknown', event: NAVIGATE_EVENTS.tool, raw: data };
+  }
 }

@@ -51,6 +51,9 @@ export const IPC = {
    */
   fsWatch: 'fs:watch',
 
+  // ── 动作卡片（外链打开，主进程校验后再放行）────────────
+  actionOpen: 'action:open',
+
   // ── 文档（上传到 navigate 知识库，仅 admin）──────────────
   /** 选文件并上传。文件选择由 main 弹框完成 —— 渲染层不碰本地绝对路径。 */
   documentUpload: 'document:upload',

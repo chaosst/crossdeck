@@ -4,7 +4,7 @@ import { errorMessage } from '../errorMessage.js';
 import { BACKPRESSURE_DEFAULTS, BackpressurePump } from './backpressure.js';
 import type { BackpressureConfig, DrainingSummary } from './backpressure.js';
 import type { AgentDeps, Cancel } from './deps.js';
-import type { ModelPort, ModelToolCall } from './model.js';
+import type { ModelAction, ModelPort, ModelToolCall, ModelToolResult } from './model.js';
 import { ToolRegistry, echoTool } from './tools.js';
 
 /**
@@ -216,6 +216,24 @@ export class AgentRuntime {
             lastProgressAt = this.#deps.now();
             void this.#runTool(run, call);
           },
+          onToolResult: (result: ModelToolResult) => {
+            lastProgressAt = this.#deps.now();
+            this.#emitToolResult(run, result);
+          },
+          onSources: (sources: readonly string[]) => {
+            // 空数组不发帧：一条「0 个来源」的卡片没有意义。
+            if (sources.length === 0) return;
+            this.#emit(run, { type: 'sources', runId: run.runId, sources: [...sources] });
+          },
+          onAction: (action: ModelAction) => {
+            this.#emit(run, {
+              type: 'action',
+              runId: run.runId,
+              actionId: action.actionId,
+              label: action.label,
+              url: action.url,
+            });
+          },
           onEnd: () => {
             ended = true;
             pump.closeUpstream();
@@ -279,8 +297,34 @@ export class AgentRuntime {
     const result = await this.#tools.invoke(call.name, call.args);
     const ms = this.#deps.now() - startedAt;
 
-    this.#emit(run, { type: 'tool_end', runId: run.runId, callId, ok: result.ok, ms });
+    this.#emit(run, {
+      type: 'tool_end',
+      runId: run.runId,
+      callId,
+      ok: result.ok,
+      ms,
+      resultPreview: truncatePreview(result.output),
+    });
     // 工具输出**不**直接塞进下行文本：那是模型的职责。内核只把结果作为事件如实报出去。
+  }
+
+  /** 上游报来的「已完成」工具调用：补一对事件，让端侧能像本地工具那样渲染。 */
+  #emitToolResult(run: ActiveRun, result: ModelToolResult): void {
+    this.#emit(run, {
+      type: 'tool',
+      runId: run.runId,
+      callId: result.callId,
+      name: result.name,
+      args: result.argsPreview,
+    });
+    this.#emit(run, {
+      type: 'tool_end',
+      runId: run.runId,
+      callId: result.callId,
+      ok: result.ok,
+      ms: result.ms,
+      resultPreview: truncatePreview(result.resultPreview),
+    });
   }
 
   #emit(run: ActiveRun, event: AgentStreamEvent): void {
@@ -316,4 +360,11 @@ export class AgentRuntime {
     if (summary.ttftMs !== undefined) usage.ttftMs = summary.ttftMs;
     return usage;
   }
+}
+
+/** 结果预览的截断长度，与 navigate 侧同口径。 */
+const TOOL_PREVIEW_MAX = 200;
+
+function truncatePreview(text: string): string {
+  return text.length <= TOOL_PREVIEW_MAX ? text : `${text.slice(0, TOOL_PREVIEW_MAX)}…`;
 }

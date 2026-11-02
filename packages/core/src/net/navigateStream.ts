@@ -196,10 +196,24 @@ export class NavigateStream {
         return false;
       }
 
-      case 'sources':
-        // ⚠️ 只能上报，**送不进 sink**：`ModelSink` 没有"来源"通道，
-        //    `contract` 的 `AgentStreamEvent` 也没有 `sources` 事件。
-        this.#report({ type: 'sources', at: this.#deps.now(), sources: dedupeSources(action.sources) });
+      case 'sources': {
+        const deduped = dedupeSources(action.sources);
+        this.#report({ type: 'sources', at: this.#deps.now(), sources: deduped });
+        // 空数组不发帧：一条「0 个来源」的卡片没有意义。
+        if (deduped.length > 0) this.#sink.onSources?.(deduped);
+        return false;
+      }
+
+      case 'tool':
+        // 上游只给「已完成」，耗时无从得知 → ms 记 0（如实标注，不猜）。
+        this.#sink.onToolResult?.({
+          callId: action.callId,
+          name: action.name,
+          argsPreview: action.argsPreview,
+          resultPreview: action.resultPreview,
+          ok: action.ok,
+          ms: 0,
+        });
         return false;
 
       case 'done':

@@ -15,12 +15,36 @@ export interface ModelToolCall {
   readonly args: unknown;
 }
 
+/** 上游报来的一次**已完成**的工具调用（navigate 的 tool 帧只有结果，没有开始）。 */
+export interface ModelToolResult {
+  readonly callId: string;
+  readonly name: string;
+  readonly argsPreview: string;
+  readonly resultPreview: string;
+  readonly ok: boolean;
+  /** 0 = 上游未提供耗时。 */
+  readonly ms: number;
+}
+
+/** 端侧动作卡片（点开跳外部页面）。URL 用之前必须过白名单。 */
+export interface ModelAction {
+  readonly actionId: string;
+  readonly label: string;
+  readonly url: string;
+}
+
 /** 流式回调。**主回调都无返回值** —— 这是 ArkTS spike 实测能过的形状。 */
 export interface ModelSink {
   /** 收到一段文本增量。**是增量，调用方负责追加**。 */
   onChunk(text: string): void;
   /** 模型决定调工具。**可选** —— 只有真会调工具的上游才需要实现它。 */
   onToolCall?(call: ModelToolCall): void;
+  /** 上游报来一次已完成的工具调用（与 `onToolCall` 二选一，别同时实现）。 */
+  onToolResult?(result: ModelToolResult): void;
+  /** 引用来源（已去重保序）。**不拼进正文**。 */
+  onSources?(sources: readonly string[]): void;
+  /** 端侧动作卡片。 */
+  onAction?(action: ModelAction): void;
   /** 上游正常说完。恰好调用一次。 */
   onEnd(): void;
   /** 上游出错。恰好调用一次，与 onEnd 互斥。 */
