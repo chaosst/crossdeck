@@ -1,5 +1,5 @@
 import { IPC } from './ipc.js';
-import type { SessionChange } from './session.js';
+import type { SessionChange, UploadProgress } from './session.js';
 import type { AgentStreamEvent } from './stream.js';
 import type { UpdateStatus } from './update.js';
 
@@ -23,6 +23,7 @@ export interface IpcPushMap {
   [IPC.agentStream]: AgentStreamEvent;
   [IPC.updateStatus]: UpdateStatus;
   [IPC.sessionChanged]: SessionChange;
+  [IPC.documentUploadProgress]: UploadProgress;
 }
 
 /** 走推送的通道名（与 InvokeChannel 互斥）。 */

@@ -227,6 +227,15 @@ export interface SelfCheckProbe {
   /** 登录结果里**不该**出现 token 字段（凭据只活主进程） */
   navLoginHasTokenField?: boolean;
   navUpstreamRestored?: boolean;
+  /** 上传入口 + 游客被拒的可见化 */
+  uiUpload?: {
+    fileClicked: boolean;
+    buttonClicked: boolean;
+    stage: string | null;
+    errorText: string | null;
+    previewShown?: boolean;
+    fsError?: string | null;
+  };
   /** 库里的消息能不能被读回来画在聊天区（会话持久化的用户可见出口） */
   uiHistory?: {
     sessionClicked: boolean;
@@ -749,22 +758,50 @@ function buildProbeScript(
     out.navScenarios[key] = rec;
   }
 
-  // 收尾必须还原成脚本上游：不还原的话报告落盘后进程还指着一个即将被关掉的假服务器，
-  // 后面任何一次误触发的 run 都会变成一个莫名其妙的连接错误。
-  try {
-    const back = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: null });
-    out.navUpstreamRestored = back.upstream.kind === 'scripted';
-  } catch (e) {
-    out.navUpstreamRestored = false;
-  }
-
   // ─────────────────────────────────────────────────────────────
   // 会话持久化的用户可见出口：库里的消息要能被读回来画在聊天区。
   // 走真实点击：切到能力页 → 点 normal 场景那个会话 → 切回聊天页 → 读文本。
   // ─────────────────────────────────────────────────────────────
   out.uiHistory = { sessionClicked: false, hasUserEcho: false, hasAnswer: false, textLength: 0 };
+  out.uiUpload = { fileClicked: false, buttonClicked: false, stage: null, errorText: null };
   await clickTab('tab-ability');
   await new Promise((r) => setTimeout(r, 400));
+
+  // 上传：点文件 → 点上传 → 假上游按真上游的 requireAdminApi 回 403（自检身份是 guest）。
+  // 这条同时验证三件事：界面有入口、请求真的发出去了、拒绝原因对用户可见。
+  const fileEntry = document.querySelector('[data-testid="ws-entry"][data-kind="file"]');
+  if (fileEntry) {
+    fileEntry.click();
+    out.uiUpload.fileClicked = true;
+    await new Promise((r) => setTimeout(r, 800));
+    // 预览面板没出来通常意味着读文件被拒（那是 scope 判定的锅），把原因带回去
+    out.uiUpload.previewShown = document.querySelector('[data-testid="upload-panel"]') !== null;
+    out.uiUpload.fsError = (() => {
+      const pre = document.querySelector('pre');
+      return pre ? (pre.textContent || '').slice(0, 160) : null;
+    })();
+    // 预览是异步读出来的：等面板真的出现，别拿固定 400ms 赌
+    for (let i = 0; i < 40; i++) {
+      if (document.querySelector('[data-testid="upload-panel"]')) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  const uploadBtn = document.querySelector('[data-testid="upload-button"]');
+  if (uploadBtn) {
+    uploadBtn.click();
+    out.uiUpload.buttonClicked = true;
+    for (let i = 0; i < 60; i++) {
+      const el = document.querySelector('[data-testid="upload-stage"]');
+      const stage = el ? el.getAttribute('data-stage') : null;
+      if (stage === 'done' || stage === 'error') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const stageEl = document.querySelector('[data-testid="upload-stage"]');
+    out.uiUpload.stage = stageEl ? stageEl.getAttribute('data-stage') : null;
+    const errEl = document.querySelector('[data-testid="upload-error"]');
+    out.uiUpload.errorText = errEl ? errEl.textContent : null;
+  }
+
   const pick = Array.from(document.querySelectorAll('button')).find(
     (b) => (b.textContent || '').indexOf('selfcheck-nav-normal') >= 0,
   );
@@ -779,6 +816,15 @@ function buildProbeScript(
   out.uiHistory.textLength = chatText.length;
   out.uiHistory.hasUserEcho = chatText.indexOf(NAV.prompts.normal) >= 0;
   out.uiHistory.hasAnswer = chatText.indexOf(${JSON.stringify(FAKE_NORMAL_TEXT)}) >= 0;
+
+  // 收尾必须还原成脚本上游：不还原的话报告落盘后进程还指着一个即将被关掉的假服务器，
+  // 后面任何一次误触发的 run 都会变成一个莫名其妙的连接错误。
+  try {
+    const back = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: null });
+    out.navUpstreamRestored = back.upstream.kind === 'scripted';
+  } catch (e) {
+    out.navUpstreamRestored = false;
+  }
 
   const statusEl = document.querySelector('[data-testid="boot-status"]');
   out.domStatus = statusEl ? statusEl.getAttribute('data-state') : null;
@@ -1136,6 +1182,15 @@ export async function runSelfCheck(
     if (probe.navUpstreamRestored !== true) {
       failures.push('自检收尾没有把上游还原成脚本上游 —— 后续 run 会打到一个已关闭的假服务器');
     }
+    // 上传请求必须真的打到上游：本地就拦下会得到一个"看起来也对"的 403 界面
+    if ((fake?.stats.uploads ?? 0) < 1) {
+      failures.push('假上游没收到任何上传请求 —— 请求没发出去，界面上的失败原因不可信');
+    }
+    if ((fake?.stats.uploadFileNames[0] ?? '') !== 'hello.txt') {
+      failures.push(
+        `上传的文件名不对（multipart 头里的 filename）：${String(fake?.stats.uploadFileNames[0])}`,
+      );
+    }
     if (probe.uiChatTab !== true) {
       failures.push('切不回「简历问答」页签 —— 五个流式场景的 DOM 断言全部不可信');
     }
@@ -1149,6 +1204,19 @@ export async function runSelfCheck(
     }
     if (probe.uiHistory?.hasAnswer !== true) {
       failures.push('聊天区没有渲染出助手正文 —— 落库的正文与读回来的不一致');
+    }
+
+    // ── 上传：入口存在 / 请求真的发出去了 / 拒绝原因对用户可见 ──
+    if (probe.uiUpload?.buttonClicked !== true) {
+      failures.push('文件预览里没有上传入口 —— 上传功能没接到界面上');
+    }
+    if (probe.uiUpload?.stage !== 'error') {
+      failures.push(`游客上传应被拒绝并显示失败，实际阶段 ${String(probe.uiUpload?.stage)}`);
+    }
+    if ((probe.uiUpload?.errorText ?? '').indexOf('体验账号') < 0) {
+      failures.push(
+        `游客上传的失败文案没说清"体验账号不行"：${String(probe.uiUpload?.errorText)}`,
+      );
     }
 
     /**

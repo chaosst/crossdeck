@@ -55,8 +55,10 @@ export const IPC = {
   actionOpen: 'action:open',
 
   // ── 文档（上传到 navigate 知识库，仅 admin）──────────────
-  /** 选文件并上传。文件选择由 main 弹框完成 —— 渲染层不碰本地绝对路径。 */
+  /** 上传已授权工作区里的某个文件 —— 渲染层只给 `{workspaceId, path}`，不碰绝对路径。 */
   documentUpload: 'document:upload',
+  /** 单向推送：上传进度（字节数归一后，比例单调）。 */
+  documentUploadProgress: 'document:upload-progress',
 
   // ── Agent 流控（背压，走 invoke 才有 ack 语义）─────────────
   agentControl: 'agent:control',

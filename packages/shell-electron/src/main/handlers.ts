@@ -13,15 +13,19 @@ import type {
   PerfSnapshot,
   SessionMeta,
   SystemInfo,
+  UploadedDocument,
   Workspace,
 } from '@crossdeck/contract';
 import {
   WorkspaceStore,
   checkOpenUrl,
+  DEFAULT_UPLOAD_POLICY,
+  checkUploadCandidate,
   createPathGuard,
   describeOpenUrlReason,
   hostOfUrl,
   resolveInWorkspace,
+  toPosix,
 } from '@crossdeck/core';
 import { abortRun, controlRun, runScripted } from './agentRuntime.js';
 import { createFsPort, toFsAppError } from './fs.js';
@@ -43,6 +47,8 @@ import { broadcastSessionChange } from './sessionEvents.js';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater.js';
 import { createWindow } from './windows.js';
 import type { LoginBody } from './navigate/auth.js';
+import { uploadDocument } from './navigate/upload.js';
+import { navigateTokenStore } from './navigate/tokenStore.js';
 
 /**
  * main 侧全部 handler。
@@ -82,7 +88,9 @@ const workspaces = new WorkspaceStore({ caseInsensitive: CASE_INSENSITIVE_FS });
 const guard = createPathGuard(workspaces, {
   // PathGuard 需要解 symlink，但 core 碰不到文件系统 —— 由壳把原语注入进去。
   // 刻意用裸 fsp.realpath 而不是 FsPort.realpath：校验本身需要它，套一层会递归。
-  realpath: (p) => fsp.realpath(p).then((real) => real, () => null),
+  // **必须** toPosix：Windows 的 realpath 返回 `D://a//b`，而 core 的判据只认 `/`，
+  // 不转的话每一个子路径都会被判成 ESCAPE_ATTEMPT（读文件全挂，symlink 测试还会"假通过"）。
+  realpath: (p) => fsp.realpath(p).then((real) => toPosix(real), () => null),
   caseInsensitive: CASE_INSENSITIVE_FS,
 });
 
@@ -268,6 +276,47 @@ export function registerHandlers(): number {
   defineInvoke(IPC.fsStat, async (req): Promise<FileStat> => {
     const abs = await resolveOrThrow(req.workspaceId, req.path);
     return withFsErrors('取文件信息', () => fsPort.stat(abs));
+  });
+
+  /**
+   * 文档上传（仅登录后可用；游客在上游侧是 403，本地也先挡一次）。
+   *
+   * 文件必须落在**已授权工作区**内 —— 复用 fs 那套 scope 校验，
+   * 渲染层照样只给 `{workspaceId, path}`，拿不到也不需要绝对路径。
+   */
+  defineInvoke(IPC.documentUpload, async (req, ctx): Promise<UploadedDocument> => {
+    const abs = await resolveOrThrow(req.workspaceId, req.path);
+    const stat = await withFsErrors('读文件信息', () => fsPort.stat(abs));
+    if (stat.kind !== 'file') throw new AppError('BAD_REQUEST', '只能上传文件，不能上传目录');
+
+    const policyHit = checkUploadCandidate(
+      { fileName: req.path.split('/').pop() ?? req.path, sizeBytes: stat.size },
+      DEFAULT_UPLOAD_POLICY,
+    );
+    // 本地判失败就不发请求：上游没有体积 / 类型限制，撑爆的是它自己的磁盘。
+    if (!policyHit.ok) throw new AppError('BAD_REQUEST', policyHit.message, policyHit.reason);
+
+    const token = navigateTokenStore.get();
+    const baseUrl = currentBaseUrl();
+    if (token === null || baseUrl === null) {
+      throw new AppError('FORBIDDEN', '上传需要先登录 navigate（上游地址未配置或没有凭据）', 'NO_TOKEN');
+    }
+
+    const sender = webContents.fromId(ctx.senderWindowId);
+    const result = await uploadDocument({
+      baseUrl,
+      token,
+      fileName: req.path.split('/').pop() ?? req.path,
+      absolutePath: abs,
+      sizeBytes: stat.size,
+      onProgress: (progress) => {
+        // 窗口可能在上传过程中被关掉 —— 推不出去不是错误
+        if (sender !== undefined && !sender.isDestroyed()) {
+          sender.send(IPC.documentUploadProgress, progress);
+        }
+      },
+    });
+    return result.document;
   });
 
   // ── 自动更新（M5）────────────────────────────────────────

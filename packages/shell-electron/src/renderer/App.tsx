@@ -9,6 +9,8 @@ import type {
   PerfSnapshot,
   SystemInfo,
   UpdateStatus,
+  UploadProgress,
+  UploadedDocument,
   WindowKind,
   Workspace,
 } from '@crossdeck/contract';
@@ -30,6 +32,8 @@ import {
   logoutNavigate,
   onSessionChanged,
   onUpdateStatus,
+  onUploadProgress,
+  uploadWorkspaceFile,
   openWindow,
   readFileText,
   samplePerf,
@@ -96,6 +100,12 @@ export default function App() {
     null,
   );
   const [fsError, setFsError] = useState<string | null>(null);
+
+  // ── M10：上传（进度 / 结果 / 失败原因分开存，不能压成一个 busy）──
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [uploadResult, setUploadResult] = useState<UploadedDocument | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // ── M5：自动更新 ──
   /**
@@ -371,6 +381,29 @@ export default function App() {
     [cwd],
   );
 
+  // 进度是推送来的：卸载不摘监听会和 agent 流一样累积成一串重复回调
+  useEffect(() => {
+    return onUploadProgress((progress) => setUploadProgress(progress));
+  }, []);
+
+  const handleUpload = useCallback(async (relPath: string) => {
+    const wsId = activeWsIdRef.current;
+    if (wsId === null) return;
+    setUploadBusy(true);
+    setUploadProgress(null);
+    setUploadResult(null);
+    setUploadError(null);
+    try {
+      const doc = await uploadWorkspaceFile(wsId, relPath);
+      setUploadResult(doc);
+    } catch (err) {
+      // 403 / 422 / 上游各有各的话术，都收在错误信封里，这里只负责原样显示
+      setUploadError(describeIpcError(err).text);
+    } finally {
+      setUploadBusy(false);
+    }
+  }, []);
+
   /** 必然失败的探针：把 `..` 塞进相对路径，让"越界被拒"在界面上肉眼可见。 */
   const probeEscape = useCallback(async () => {
     const wsId = activeWsIdRef.current;
@@ -614,6 +647,70 @@ export default function App() {
                             </li>
                           ))}
                         </ul>
+                      )}
+
+                      {preview && (
+                        <div
+                          className="mt-3 rounded border border-line-subtle bg-surface p-3"
+                          data-testid="upload-panel"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              onClick={() => void handleUpload(preview.path)}
+                              disabled={uploadBusy}
+                            >
+                              <span data-testid="upload-button">上传到知识库</span>
+                            </Button>
+                            {/* 阶段与比例进 data-*：自检读它，人眼读右边那句 */}
+                            <span
+                              data-testid="upload-stage"
+                              data-stage={
+                                uploadBusy
+                                  ? 'uploading'
+                                  : uploadResult !== null
+                                    ? 'done'
+                                    : uploadError !== null
+                                      ? 'error'
+                                      : 'idle'
+                              }
+                              data-ratio={
+                                uploadProgress === null ? '' : uploadProgress.ratio.toFixed(2)
+                              }
+                              className="text-[11px] text-muted"
+                            >
+                              {uploadBusy
+                                ? uploadProgress === null
+                                  ? '准备上传…'
+                                  : `已传 ${Math.round(uploadProgress.ratio * 100)}%` +
+                                    (uploadProgress.bytesPerSec === null
+                                      ? ''
+                                      : ` · ${formatBytes(uploadProgress.bytesPerSec)}/s`) +
+                                    (uploadProgress.etaSec === null
+                                      ? ' · 剩余时间未知'
+                                      : ` · 还剩 ${uploadProgress.etaSec}s`)
+                                : uploadResult !== null
+                                  ? `${uploadResult.filename} 已入库（${uploadResult.chunks} 个切片）`
+                                  : uploadError !== null
+                                    ? '上传失败'
+                                    : '仅登录账号可上传'}
+                            </span>
+                          </div>
+
+                          {uploadResult !== null && (
+                            <p className="mt-2 font-mono text-[11px] text-ink-muted">
+                              docId {uploadResult.docId}
+                            </p>
+                          )}
+
+                          {uploadError !== null && (
+                            <p
+                              data-testid="upload-error"
+                              className="mt-2 whitespace-pre-wrap rounded border border-danger-line bg-danger-surface px-2 py-1 text-[11px] leading-relaxed text-danger"
+                            >
+                              {uploadError}
+                            </p>
+                          )}
+                        </div>
                       )}
 
                       {preview && (

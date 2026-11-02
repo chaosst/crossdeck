@@ -59,6 +59,10 @@ export const FAKE_NORMAL_TEXT = FAKE_NORMAL_CHUNKS.join('');
 export interface FakeUpstreamStats {
   /** guest 登录次数 */
   logins: number;
+  /** 打到这里来的上传请求数（被 403 挡下的也算 —— 要能证明请求真的发出去了） */
+  uploads: number;
+  /** 最近一次上传请求体里的文件名（解析 multipart 头得到） */
+  uploadFileNames: string[];
   /** 每个场景服务端实际写出的 token 帧数 */
   frames: Record<string, number>;
   /** 服务端把响应写完（`res.end()` 过）的场景 */
@@ -90,7 +94,15 @@ async function readBody(req: IncomingMessage): Promise<string> {
 export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream> {
   let seq = 0;
   const liveTokens = new Set<string>();
-  const stats: FakeUpstreamStats = { logins: 0, frames: {}, ended: [], doneSent: [], clientGone: [] };
+  const stats: FakeUpstreamStats = {
+    logins: 0,
+    uploads: 0,
+    uploadFileNames: [],
+    frames: {},
+    ended: [],
+    doneSent: [],
+    clientGone: [],
+  };
 
   const sendFrame = (res: ServerResponse, event: string, data: string): void => {
     res.write(`event: ${event}\ndata: ${data}\n\n`);
@@ -210,6 +222,19 @@ export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream>
       if (req.method === 'GET' && url.pathname === '/api/logout') {
         const token = url.searchParams.get('token');
         json(200, { ok: true, revoked: token !== null && liveTokens.delete(token) });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/upload') {
+        stats.uploads += 1;
+        const body = await readBody(req);
+        const nameMatch = /filename="([^"]*)"/.exec(body);
+        if (nameMatch !== null) stats.uploadFileNames.push(nameMatch[1] ?? '');
+        const token = url.searchParams.get('token');
+        if (token === null || !liveTokens.has(token)) return json(401, { error: 'unauthorized' });
+        // 真上游的 /api/upload 挂着 requireAdminApi：guest 一律 403。
+        // 自检拿到的就是 guest，所以这里必须回 403 —— 断言"游客上传被明确拒绝"靠它。
+        json(403, { error: 'forbidden' });
         return;
       }
 

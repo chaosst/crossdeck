@@ -22,7 +22,7 @@ export interface IpcInvokeMap {
   [IPC.sessionDelete]: { req: { sessionId: string }; res: void };
   [IPC.sessionMessages]: { req: { sessionId: string }; res: SessionMessageDetail[] };
 
-  [IPC.documentUpload]: { req: { sessionId: string }; res: UploadedDocument };
+  [IPC.documentUpload]: { req: { workspaceId: string; path: string }; res: UploadedDocument };
 
   [IPC.agentRun]: { req: { sessionId: string; input: string }; res: { runId: string } };
   [IPC.agentAbort]: { req: { runId: string }; res: void };

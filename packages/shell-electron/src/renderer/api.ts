@@ -14,6 +14,8 @@ import type {
   SessionMeta,
   SystemInfo,
   UpdateInfo,
+  UploadProgress,
+  UploadedDocument,
   UpdateStatus,
   WindowKind,
   Workspace,
@@ -191,6 +193,24 @@ export function attachStreamRenderer(
 /** 订阅原始事件流（App 用这个，需要看到全部事件类型）。 */
 export function onAgentEvent(handler: (event: AgentStreamEvent) => void): () => void {
   return window.bridge.on(IPC.agentStream, handler);
+}
+
+/**
+ * 上传工作区里的一个文件到 navigate 知识库。
+ *
+ * 只给 `{workspaceId, path}`：绝对路径、multipart 组装、token 都在主进程，
+ * 渲染层连"文件在哪"都不需要知道。
+ */
+export async function uploadWorkspaceFile(
+  workspaceId: string,
+  path: string,
+): Promise<UploadedDocument> {
+  return window.bridge.invoke(IPC.documentUpload, { workspaceId, path });
+}
+
+/** 上传进度推送（三端归一后，比例单调）。 */
+export function onUploadProgress(handler: (progress: UploadProgress) => void): () => void {
+  return window.bridge.on(IPC.documentUploadProgress, handler);
 }
 
 /** 会话变更推送：只报「哪个会话动了」，要不要重拉由调用方决定。 */

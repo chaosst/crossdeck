@@ -33,6 +33,7 @@ export * from './net/navigateStream.js';
 export * from './net/openUrl.js';
 export * from './net/navigateAuth.js';
 export * from './net/chatClient.js';
+export * from './net/upload.js';
 export * from './events/streamBus.js';
 export * from './agent/deps.js';
 export * from './agent/backpressure.js';

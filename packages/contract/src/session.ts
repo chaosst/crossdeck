@@ -89,6 +89,21 @@ export type SessionChange =
   /** 整个列表换了（切账号 → 换了库文件）。此时没有 sessionId 可指。 */
   | { reason: 'switched' };
 
+/**
+ * 上传进度（三端归一之后）。
+ *
+ * `bytesPerSec` / `etaSec` 为 `null` 表示**样本不足**，不是 0 ——
+ * UI 此时该显示"计算中"，而不是一个编出来的数字。
+ */
+export interface UploadProgress {
+  readonly sentBytes: number;
+  readonly totalBytes: number;
+  /** 0..1，单调不减。 */
+  readonly ratio: number;
+  readonly bytesPerSec: number | null;
+  readonly etaSec: number | null;
+}
+
 /** 上传成功后的文档，字段对齐 navigate `POST /api/upload` 的响应。 */
 export interface UploadedDocument {
   docId: string;
