@@ -7,26 +7,16 @@ import { MarkdownView } from "./markdown-view";
 import {
   createSession,
   listSessionMessages,
-  onAgentEvent,
   onSessionChanged,
   openAction,
-  samplePerf,
   startAgentRun,
-  startStreamFpsProbe,
-  stopStreamFpsProbe,
 } from "../api";
-import { assertNever, type AgentStreamEvent, type SessionChange } from "@crossdeck/contract";
+import { assertNever, type SessionChange } from "@crossdeck/contract";
 import type { SessionMessageDetail } from "@crossdeck/contract";
 import { store, type RootState } from "../store";
 import { logger } from "../utils/logger";
 import { sessionActivated } from "../store/slices/sessions";
-import {
-  streamFailed,
-  streamFinished,
-  streamStarted,
-  streamTokenAppended,
-  type StreamStage,
-} from "../store/slices/stream";
+import type { StreamStage } from "../store/slices/stream";
 
 const TAG = 'ResumeChat'
 
@@ -47,8 +37,6 @@ interface MyComponentState {
 
 class ResumeChat extends Component<MyComponentProps, MyComponentState> {
   agentName = "Navigate"
-  runId: string | null = null
-  private unsubscribe: (() => void) | null = null
   private unsubscribeSession: (() => void) | null = null
 
   constructor(props: MyComponentProps) {
@@ -67,41 +55,9 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
     } as MyComponentState))
   }
 
-  // 订阅只能挂一次：放 componentDidUpdate 会随每次渲染累积监听器，同一 token 被追加 N 次。
+  // 只订阅"库变了"。agent 流由窗口入口统一接（见 streamBinding.ts）——
+  // 挂在这里的话，切页签卸载本组件就会把订阅一并摘掉，中途到达的 token 全丢。
   override componentDidMount(): void {
-    this.unsubscribe = onAgentEvent((event: AgentStreamEvent) => {
-      switch (event.type) {
-        case 'start':
-          // 一次 dispatch 把 text/usage/paused/runId/stage 挪到「正在流式」的合法组合。
-          store.dispatch(streamStarted({ runId: event.runId }));
-          startStreamFpsProbe();
-          break;
-        case 'token':
-          store.dispatch(streamTokenAppended(event.text));
-          break;
-        case 'tool':
-        case 'tool_end':
-        case 'plan':
-          // 工具调用与 plan 不单独渲染：落库后由事件卡片统一展示（见 renderHistory）
-          break;
-        case 'sources':
-        case 'action':
-          // 同理，来自 history 的事件卡片
-          break;
-        case 'done':
-          store.dispatch(streamFinished(event.usage));
-          this.reportStreamFps();
-          break;
-        case 'error':
-          store.dispatch(streamFailed(`[${event.code}] ${event.message}`));
-          this.reportStreamFps();
-          break;
-        default:
-          // 不加 `as never`：它就是穷尽检查本身，转成 never 等于把检查关掉
-          assertNever(event);
-      }
-    });
-
     this.unsubscribeSession = onSessionChanged((change: SessionChange) => {
       this.onSessionChange(change);
     });
@@ -110,18 +66,8 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
   }
 
   override componentWillUnmount(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
     this.unsubscribeSession?.();
     this.unsubscribeSession = null;
-  }
-
-  /** 收尾时把实测帧率上报给主进程 —— 0 表示"没测到"，不要说成"帧率 0"。 */
-  private reportStreamFps(): void {
-    const fps = stopStreamFpsProbe();
-    void samplePerf({ streamFps: fps }).catch(() => {
-      /* 采样失败不影响对话 */
-    });
   }
 
   /** 别的窗口 / 登录切换都可能改库，这里只负责「要不要重拉」。 */
@@ -172,8 +118,7 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
         sessionId = created.id;
       }
       this.setStateHandler("inputStr", "");
-      const { runId } = await startAgentRun(sessionId, input);
-      this.runId = runId;
+      await startAgentRun(sessionId, input);
       // 用户消息与助理占位在主进程里已经落库，重拉一次就到位（不再本地拼历史）。
       await this.reloadHistory();
     } catch (err) {

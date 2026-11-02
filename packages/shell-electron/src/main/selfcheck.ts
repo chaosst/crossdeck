@@ -243,6 +243,20 @@ export interface SelfCheckProbe {
     hasAnswer: boolean;
     textLength: number;
   };
+  /**
+   * 流式中途切页签：聊天页会被卸载，订阅若挂在页上，这段 token 就没人写进 store。
+   * `hiddenTokens` 是「页签不在时」到达的帧数 —— 它是 0 的话这条断言什么也没测到。
+   */
+  uiTabSwitch?: {
+    switched: boolean;
+    hiddenTokens: number;
+    tokens: number;
+    textLength: number;
+    domTextLength: number;
+    domStage: string | null;
+    ended: boolean;
+    error: string | null;
+  };
   domStatus: string | null;
   domText: string;
 }
@@ -759,6 +773,66 @@ function buildProbeScript(
   }
 
   // ─────────────────────────────────────────────────────────────
+  // 流式中途切页签：帧不该因为「聊天页不在 DOM 里」而丢失。
+  //
+  // 用 abort 场景当素材：它每 60ms 滴一帧、不会自己停 —— 正好给出足够宽的
+  // 时间窗，让"切走期间陆续到达"这件事真的发生。normal 场景 5 帧 100ms 就完了，
+  // 拿它做这个断言只会测到"切的时候已经结束"。
+  //
+  // ⚠️ 这条断言只有在 hiddenTokens > 0 时才有意义，所以它自己也要被断言。
+  // ─────────────────────────────────────────────────────────────
+  out.uiTabSwitch = {
+    switched: false,
+    hiddenTokens: 0,
+    tokens: 0,
+    textLength: 0,
+    domTextLength: -1,
+    domStage: null,
+    ended: false,
+    error: null,
+  };
+  {
+    const evts = [];
+    const offTs = window.bridge.on('agent:stream', (e) => evts.push(e));
+    try {
+      const created = await window.bridge.invoke('session:create', { title: 'selfcheck-tab-switch' });
+      const started = await window.bridge.invoke('agent:run', {
+        sessionId: created.id,
+        input: NAV.prompts.abort,
+      });
+      // 等第一帧真的到再切走 —— 切得太早测的是"还没开始就离开"，不是"中途离开"
+      for (let i = 0; i < 80; i++) {
+        if (evts.some((e) => e.type === 'token')) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const beforeSwitch = evts.filter((e) => e.type === 'token').length;
+      out.uiTabSwitch.switched = await clickTab('tab-ability');
+      // 聊天页此刻已经不在 DOM 里了（React 卸载），帧继续在滴
+      await new Promise((r) => setTimeout(r, 800));
+      out.uiTabSwitch.hiddenTokens =
+        evts.filter((e) => e.type === 'token').length - beforeSwitch;
+      await clickTab('tab-chat');
+      // 切回来之后再流一小段：验证"回来之后"的帧也没丢
+      await new Promise((r) => setTimeout(r, 300));
+      await window.bridge.invoke('agent:abort', { runId: started.runId });
+      out.uiTabSwitch.ended = await waitEnd(evts, 12000);
+      // 终态之后再读 DOM：还在滴的时候读会读到"少一帧"，那是时序不是缺陷
+      await new Promise((r) => setTimeout(r, 250));
+      const dom = readStreamDom();
+      out.uiTabSwitch.tokens = evts.filter((e) => e.type === 'token').length;
+      out.uiTabSwitch.textLength = evts
+        .filter((e) => e.type === 'token')
+        .map((e) => e.text)
+        .join('').length;
+      out.uiTabSwitch.domTextLength = dom.textLength;
+      out.uiTabSwitch.domStage = dom.stage;
+    } catch (e) {
+      out.uiTabSwitch.error = parseErr(e).message;
+    }
+    offTs();
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // 会话持久化的用户可见出口：库里的消息要能被读回来画在聊天区。
   // 走真实点击：切到能力页 → 点 normal 场景那个会话 → 切回聊天页 → 读文本。
   // ─────────────────────────────────────────────────────────────
@@ -1204,6 +1278,34 @@ export async function runSelfCheck(
     }
     if (probe.uiHistory?.hasAnswer !== true) {
       failures.push('聊天区没有渲染出助手正文 —— 落库的正文与读回来的不一致');
+    }
+
+    // ── 流式中途切页签：帧不能因为聊天页被卸载而丢 ──
+    const tabSwitch = probe.uiTabSwitch;
+    if (tabSwitch === undefined) {
+      failures.push('切页签探针没有结果 —— 探针没跑到它');
+    } else {
+      if (tabSwitch.error !== null) failures.push(`切页签探针抛错：${tabSwitch.error}`);
+      if (tabSwitch.switched !== true) {
+        failures.push('切不到「应用能力」页签 —— 切页签丢帧这条断言无法成立');
+      }
+      // 页签不在的那段时间一帧都没到 → 这条断言等于没跑（时间窗太窄或流已经停了）
+      if (tabSwitch.hiddenTokens <= 0) {
+        failures.push('切走期间一帧都没到 —— 这条断言什么也没测到，不能当通过');
+      }
+      if (tabSwitch.ended !== true) failures.push('切页签场景 12s 内没有终态');
+      if (tabSwitch.domStage !== 'error') {
+        failures.push(
+          `切页签场景 DOM data-stage 应为 error（abort 收尾），实际 ${String(tabSwitch.domStage)}`,
+        );
+      }
+      if (tabSwitch.domTextLength !== tabSwitch.textLength) {
+        failures.push(
+          `切页签期间丢了帧：订阅到 ${String(tabSwitch.textLength)} 个字符，` +
+            `store 里只有 ${String(tabSwitch.domTextLength)} —— ` +
+            '流式订阅挂在聊天页上，页签一卸载就断了（应挂在窗口入口）',
+        );
+      }
     }
 
     // ── 上传：入口存在 / 请求真的发出去了 / 拒绝原因对用户可见 ──

@@ -4,6 +4,7 @@ import { Provider } from 'react-redux';
 import App from './App';
 import Login from './pages/Login';
 import { store } from './store';
+import { bindAgentStream } from './streamBinding';
 import './styles.css';
 import { getNavigateStatus } from './api';
 
@@ -21,6 +22,13 @@ const status = await getNavigateStatus();
 if (!status.login.hasToken) {
   window.location.hash = '#/login';
 }
+
+/**
+ * agent 流在这里接一次，不在聊天页里接 —— 聊天页切页签会被卸载，
+ * 它持有的订阅也会随之摘掉，流式中途切走再回来正文就缺一段。
+ * 订阅只与窗口同寿，所以这里刻意不保留退订句柄。
+ */
+bindAgentStream();
 
 /**
  * 入口分流：#/login → 登录界面，其余走 App。Provider 必须在分流点之上。
