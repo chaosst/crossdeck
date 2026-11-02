@@ -718,7 +718,7 @@ if (!listeningOnHardcoded) {
   // 盘上**有** token（加密的），但那份只在主进程里
   const rawEnvelope = JSON.parse(readFileSync(tokenFile, 'utf8'));
   check('凭据真的落盘了', existsSync(tokenFile) === true);
-  check('落盘用的是 v2 信封（v1 只存 token，装不下角色/有效期）', rawEnvelope.v === 2);
+  check('落盘用的是 v3 信封（v1 只有 token；v2 装不下账号键）', rawEnvelope.v === 3, String(rawEnvelope.v));
   check('safeStorage 可用时，盘上 data 是密文而不是明文 token', rawEnvelope.enc === true && rawEnvelope.data !== secret);
   check('密文里也不该出现明文 token', JSON.parse(readFileSync(tokenFile, 'utf8')).data.includes(secret) === false);
 

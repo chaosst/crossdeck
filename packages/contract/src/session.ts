@@ -83,10 +83,11 @@ export interface SessionMessageDetail extends SessionMessage {
 }
 
 /** 会话变更通知。只报"哪个会话动了"，不塞全量数据。 */
-export interface SessionChange {
-  sessionId: string;
-  reason: 'created' | 'updated' | 'deleted';
-}
+export type SessionChange =
+  /** 单个会话变了。 */
+  | { sessionId: string; reason: 'created' | 'updated' | 'deleted' }
+  /** 整个列表换了（切账号 → 换了库文件）。此时没有 sessionId 可指。 */
+  | { reason: 'switched' };
 
 /** 上传成功后的文档，字段对齐 navigate `POST /api/upload` 的响应。 */
 export interface UploadedDocument {

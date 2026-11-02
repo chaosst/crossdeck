@@ -18,6 +18,7 @@ import {
   NAVIGATE_CHALLENGE_NEEDED_PATH,
   NAVIGATE_LOGIN_CODE_PATH,
   NAVIGATE_LOGIN_GUEST_PATH,
+  NAVIGATE_ME_PATH,
   NAVIGATE_LOGIN_PATH,
   NAVIGATE_LOGOUT_PATH,
   describeNavigateLoginFailure,
@@ -347,4 +348,26 @@ export async function revokeUpstreamSession(
   return res.ok
     ? { result: 'revoked' }
     : { result: 'revoke-failed', message: `上游登出接口返回 HTTP ${res.status}` };
+}
+
+/**
+ * 当前账号名（`/api/me` 的 `username`）。
+ *
+ * 本地库按账号分文件，而登录响应里没有账号名 —— 只能再问一次上游。
+ * 取不到一律返回 `null`（调用方退到 `local` 库），**登录本身不因此失败**。
+ */
+export async function fetchMe(cfg: NavigateAuthConfig, token: string): Promise<string | null> {
+  try {
+    const endpoint = `${cfg.baseUrl}${NAVIGATE_ME_PATH}?token=${encodeURIComponent(token)}`;
+    const res = await fetchWithTimeout(
+      { baseUrl: cfg.baseUrl, timeoutMs: cfg.timeoutMs, fetchImpl: cfg.fetchImpl },
+      endpoint,
+      { method: 'GET', headers: { accept: 'application/json' } },
+    );
+    if (!res.ok) return null;
+    const payload = (await res.json()) as { username?: unknown };
+    return typeof payload.username === 'string' && payload.username.length > 0 ? payload.username : null;
+  } catch {
+    return null;
+  }
 }

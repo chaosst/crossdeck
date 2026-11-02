@@ -30,6 +30,9 @@ export const NAVIGATE_LOGIN_GUEST_PATH = '/api/login/guest';
 /** 登出端点（上游是 GET，吊销 token 并清 cookie）。 */
 export const NAVIGATE_LOGOUT_PATH = '/api/logout';
 
+/** 当前身份。用于取账号名（本地库按账号分文件）。 */
+export const NAVIGATE_ME_PATH = '/api/me';
+
 /**
  * 登录请求的超时（ms）。
  *

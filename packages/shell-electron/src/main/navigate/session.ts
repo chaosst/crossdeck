@@ -21,6 +21,7 @@ import {
   createChallenge,
   fetchChallengeImage,
   fetchChallengeNeeded,
+  fetchMe,
   login,
   loginGuest,
   revokeUpstreamSession,
@@ -36,6 +37,25 @@ const BASE_URL = 'http://127.0.0.1:3001'
 /** 当前上游根地址；当前固定，`null` = 脚本上游那条分支暂不可达。 */
 export function currentBaseUrl(): string | null {
   return BASE_URL
+}
+
+/**
+ * 本地库的账号键：登录后按账号名分文件，未登录 / 取不到账号名时落 `local`。
+ *
+ * 先用账号名、退到角色，是因为「每账号一个库」要的是账号粒度；
+ * 而 `/api/me` 可能因网络失败取不到，那时退到角色总比拒绝打开库好。
+ */
+export function currentAccountKey(): string {
+  if (navigateTokenStore.get() === null) return 'local';
+  const name = navigateTokenStore.accountKey();
+  if (name !== null) return name;
+  return navigateTokenStore.status().role ?? 'local';
+}
+
+/** 登录成功后补记账号名（best-effort：失败不影响登录结果）。 */
+async function bindAccountKey(baseUrl: string, token: string): Promise<void> {
+  const username = await fetchMe({ baseUrl, now: () => Date.now(), timeoutMs: 3000 }, token);
+  if (username !== null) navigateTokenStore.setAccountKey(username);
 }
 
 /**
@@ -78,6 +98,7 @@ export async function loginAsGuest(): Promise<GuestLoginResult> {
 
   const session = await loginGuest({ baseUrl: url, now: () => Date.now() });
   navigateTokenStore.set(session);
+  await bindAccountKey(url, session.token);
 
   return { role: session.role, expiresInSec: session.expiresInSec, expiresAt: session.expiresAt };
 }
@@ -133,6 +154,7 @@ export async function loginAsUser(body: LoginBody): Promise<GuestLoginResult> {
       sid: challengeSid ?? undefined,
     });
     navigateTokenStore.set(session);
+    await bindAccountKey(url, session.token);
     return { role: session.role, expiresInSec: session.expiresInSec, expiresAt: session.expiresAt };
   } finally {
     // 挑战是一次性的：无论成功还是答错，这张题都已被上游消费，留着只会误导下一次提交。

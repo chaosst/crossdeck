@@ -27,7 +27,7 @@ import type { NavigateSession } from '@crossdeck/core';
  * 一下看像不像 JSON" —— 而一个以 `{` 开头的 token 会让那种猜测静默走错分支。
  */
 interface Envelope {
-  readonly v: 1 | 2;
+  readonly v: 1 | 2 | 3;
   /** `true` = `data` 是 safeStorage 密文的 base64；`false` = `data` 就是明文。 */
   readonly enc: boolean;
   readonly data: string;
@@ -43,19 +43,26 @@ interface Credential {
   readonly token: string;
   readonly role: NavigateRole | null;
   readonly expiresAt: number | null;
+  /** 账号名（`/api/me` 的 username）。本地库按它分文件；不知道时为 `null`。 */
+  readonly accountKey: string | null;
 }
 
-/** v2 的明文形态（写盘用）。 */
+/** v2/v3 的明文形态（写盘用）。 */
 interface SessionPayload {
   readonly token: string;
   readonly role: NavigateRole;
   readonly expiresAt: number;
+  readonly accountKey?: string;
 }
 
 export interface TokenStore {
   /** 当前 token（流式问答只要这个）。没有则 `null`。 */
   get(): string | null;
-  set(session: NavigateSession): void;
+  set(session: NavigateSession, accountKey?: string): void;
+  /** 登录后取到账号名时补写（`/api/me` 是额外的网络调用，失败不影响登录）。 */
+  setAccountKey(accountKey: string): void;
+  /** 账号键：`null` = 不知道（旧凭据 / 没取到）。调用方据此退到 `local`。 */
+  accountKey(): string | null;
   clear(): void;
   /** 给 UI 看的登录态。**不含 token**。 */
   status(): NavigateLoginStatus;
@@ -120,7 +127,7 @@ export function createTokenStore(): TokenStore {
       return;
     }
 
-    if (envelope.v !== 1 && envelope.v !== 2) {
+    if (envelope.v !== 1 && envelope.v !== 2 && envelope.v !== 3) {
       lastNote = `凭据文件版本不认识（v=${String(envelope.v)}，已忽略，请重新登录）`;
       console.warn(`[navigate] ${lastNote}：${p}`);
       return;
@@ -130,7 +137,7 @@ export function createTokenStore(): TokenStore {
     if (plain === null) return; // decode 已写好 note
 
     if (envelope.v === 1) {
-      cached = { token: plain, role: null, expiresAt: null };
+      cached = { token: plain, role: null, expiresAt: null, accountKey: null };
       lastEncrypted = envelope.enc;
       lastNote = '凭据是旧格式（只有 token，没有角色与有效期）—— 建议重新登录一次';
       return;
@@ -158,6 +165,8 @@ export function createTokenStore(): TokenStore {
       token: payload.token,
       role,
       expiresAt: typeof payload.expiresAt === 'number' ? payload.expiresAt : null,
+      accountKey:
+        typeof payload.accountKey === 'string' && payload.accountKey.length > 0 ? payload.accountKey : null,
     };
     lastEncrypted = envelope.enc;
     lastNote = envelope.enc
@@ -166,41 +175,67 @@ export function createTokenStore(): TokenStore {
     if (!envelope.enc) console.warn(`[navigate] ${lastNote}：${p}`);
   };
 
+  /** 落盘一份 v3 信封（多一个账号键，本地库靠它分文件）。 */
+  const persist = (payload: SessionPayload): void => {
+    const p = filePath();
+    mkdirSync(dirname(p), { recursive: true });
+    const plain = JSON.stringify(payload);
+
+    let envelope: Envelope;
+    if (encryptionAvailable()) {
+      envelope = { v: 3, enc: true, data: safeStorage.encryptString(plain).toString('base64') };
+      lastEncrypted = true;
+      lastNote = '凭据已加密保存（safeStorage）';
+    } else {
+      // 如实降级：**写明文但明确标注**，而不是假装加密了。
+      // 若要更严，可改成"只留在内存"（代价：重启后要重新登录）——
+      // 那是口径变更，得先写进文档，别悄悄改。
+      envelope = { v: 3, enc: false, data: plain };
+      lastEncrypted = false;
+      lastNote = '系统安全存储不可用：凭据是**明文**存在磁盘上的';
+      console.warn(`[navigate] ${lastNote}：${p}`);
+    }
+
+    writeFileSync(p, JSON.stringify(envelope), { encoding: 'utf8', mode: 0o600 });
+    cached = {
+      token: payload.token,
+      role: payload.role,
+      expiresAt: payload.expiresAt,
+      accountKey: payload.accountKey ?? null,
+    };
+    loaded = true;
+  };
+
   return {
     get(): string | null {
       load();
       return cached?.token ?? null;
     },
 
-    set(session: NavigateSession): void {
-      const p = filePath();
-      mkdirSync(dirname(p), { recursive: true });
-
-      const payload: SessionPayload = {
+    set(session: NavigateSession, accountKey?: string): void {
+      persist({
         token: session.token,
         role: session.role,
         expiresAt: session.expiresAt,
-      };
-      const plain = JSON.stringify(payload);
+        ...(accountKey === undefined || accountKey.length === 0 ? {} : { accountKey }),
+      });
+    },
 
-      let envelope: Envelope;
-      if (encryptionAvailable()) {
-        envelope = { v: 2, enc: true, data: safeStorage.encryptString(plain).toString('base64') };
-        lastEncrypted = true;
-        lastNote = '凭据已加密保存（safeStorage）';
-      } else {
-        // 如实降级：**写明文但明确标注**，而不是假装加密了。
-        // 若要更严，可改成"只留在内存"（代价：重启后要重新登录）——
-        // 那是口径变更，得先写进文档，别悄悄改。
-        envelope = { v: 2, enc: false, data: plain };
-        lastEncrypted = false;
-        lastNote = '系统安全存储不可用：凭据是**明文**存在磁盘上的';
-        console.warn(`[navigate] ${lastNote}：${p}`);
-      }
+    setAccountKey(accountKey: string): void {
+      load();
+      if (cached === null || cached.role === null) return;
+      if (cached.accountKey === accountKey) return;
+      persist({
+        token: cached.token,
+        role: cached.role,
+        expiresAt: cached.expiresAt ?? 0,
+        accountKey,
+      });
+    },
 
-      writeFileSync(p, JSON.stringify(envelope), { encoding: 'utf8', mode: 0o600 });
-      cached = payload;
-      loaded = true;
+    accountKey(): string | null {
+      load();
+      return cached?.accountKey ?? null;
     },
 
     clear(): void {
