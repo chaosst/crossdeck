@@ -9,6 +9,8 @@ import type {
   NavigateStatus,
   PerfSampleInput,
   PerfSnapshot,
+  SessionChange,
+  SessionMessageDetail,
   SessionMeta,
   SystemInfo,
   UpdateInfo,
@@ -73,6 +75,15 @@ export async function createSession(title?: string): Promise<SessionMeta> {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   return window.bridge.invoke(IPC.sessionDelete, { sessionId });
+}
+
+export async function listSessionMessages(sessionId: string): Promise<SessionMessageDetail[]> {
+  return window.bridge.invoke(IPC.sessionMessages, { sessionId });
+}
+
+/** 打开动作卡片的外链。URL 由 main 校验，这里不做任何判断。 */
+export async function openAction(url: string): Promise<void> {
+  return window.bridge.invoke(IPC.actionOpen, { url });
 }
 
 export async function startAgentRun(sessionId: string, input: string): Promise<{ runId: string }> {
@@ -180,6 +191,11 @@ export function attachStreamRenderer(
 /** 订阅原始事件流（App 用这个，需要看到全部事件类型）。 */
 export function onAgentEvent(handler: (event: AgentStreamEvent) => void): () => void {
   return window.bridge.on(IPC.agentStream, handler);
+}
+
+/** 会话变更推送：只报「哪个会话动了」，要不要重拉由调用方决定。 */
+export function onSessionChanged(handler: (change: SessionChange) => void): () => void {
+  return window.bridge.on(IPC.sessionChanged, handler);
 }
 
 // ── M5：自动更新 ─────────────────────────────────────────────
