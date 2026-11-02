@@ -28,8 +28,8 @@
     "pack:win": "node scripts/build.mjs && electron-builder --win --config electron-builder.yml",
     "typecheck": "tsc -b",
     "verify:store": "node scripts/verify-renderer-store.mjs",
-    "verify:resume-chat": "node scripts/verify-resume-chat-subscribe.mjs",
-    "verify:update-feed": "node scripts/verify-update-feed.mjs"
+    "verify:update-feed": "node scripts/verify-update-feed.mjs",
+    "verify:stream-binding": "node scripts/verify-agent-stream-binding.mjs"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

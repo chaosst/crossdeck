@@ -26,7 +26,7 @@ function reportStreamFps(): void {
  * 之所以仍然返回它，是为了可测、也为了不留"只能挂不能摘"的接口。
  */
 export function bindAgentStream(): () => void {
-  return onAgentEvent((event: AgentStreamEvent) => {
+  const off = onAgentEvent((event: AgentStreamEvent) => {
     switch (event.type) {
       case 'start':
         // 一次 dispatch 把 text/usage/paused/runId/stage 挪到「正在流式」的合法组合。
@@ -58,4 +58,5 @@ export function bindAgentStream(): () => void {
         assertNever(event);
     }
   });
+  return off;
 }

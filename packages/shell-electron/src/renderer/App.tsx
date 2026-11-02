@@ -240,8 +240,8 @@ export default function App() {
       }
       const { runId } = await startAgentRun(sessionId, '自检：流式通道是否可用');
       // ⚠️ 这是 invoke 的**回执**，不是首帧：`stage` 依然停在 idle，
-      //    要等上游 `start` 事件（上面的订阅）才推进到 streaming。
-      dispatch(runAccepted(runId));
+      //    要等上游 `start` 事件（streamBinding 的订阅）才推进到 streaming。
+      dispatch(runAccepted({ runId, sessionId }));
     } catch (err) {
       setActionError(describeIpcError(err).text);
     }

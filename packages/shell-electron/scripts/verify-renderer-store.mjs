@@ -6,8 +6,8 @@
  * 每个承重断言配一个变异体：必须挂在预期断言上；再反向拿掉该断言，变异体必须杀不掉。
  * 锚点失配报失败，不静默跳过。
  *
- * 实测（2026-10-12 定稿）：正向断言 12 条全绿；承重变异 5 个全杀、归因唯一；
- * 反向 5 例均"拿掉断言后杀不掉"；预期存活 1 个（V6，无可观测差异），非预期存活 0 条。
+ * 实测（2026-11-02 定稿）：正向断言 13 条全绿；承重变异 6 个全杀、归因唯一；
+ * 反向 6 例均"拿掉断言后杀不掉"；预期存活 1 个（V6，无可观测差异），非预期存活 0 条。
  */
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
@@ -100,6 +100,7 @@ check('stream.initial', (m) => {
   assertEq(s.usage, null, 'usage 初值 null');
   assertEq(s.paused, false, 'paused 初值 false');
   assertEq(s.error, null, 'error 初值 null');
+  assertEq(s.sessionId, null, 'sessionId 初值 null（不知道这轮属于谁）');
 });
 
 /** 承重断言 ③：新一轮 `start` 必须把上一轮的 **text / usage / error** 一起清掉。 */
@@ -157,7 +158,7 @@ check('stream.fail', (m) => {
 /** 承重断言 ⑤：runAccepted（invoke 回执）不得推进 stage —— 回执 ≠ 首帧。 */
 check('stream.runAccepted-is-not-first-byte', (m) => {
   let s = m.streamReducer(undefined, INIT);
-  s = m.streamReducer(s, m.runAccepted('r9'));
+  s = m.streamReducer(s, m.runAccepted({ runId: 'r9', sessionId: 's1' }));
   assertEq(s.runId, 'r9', '回执应写入 runId');
   assertEq(s.stage, 'idle', '回执 ≠ 首帧 —— stage 必须留在 idle');
 });
@@ -177,7 +178,32 @@ check('stream.reset-clears-stage', (m) => {
   assertEq(out.usage, null, 'reset 后 usage 必须清空');
 });
 
-/** 断言 ⑦：真 store 集成烟雾断言 —— reset 后 subscribe 照常收到通知。 */
+/** 承重断言 ⑦：切到**别的**会话时必须整块清掉上一轮的流状态。 */
+check('stream.switch-session-clears', (m) => {
+  let s = m.streamReducer(undefined, INIT);
+  s = m.streamReducer(s, m.runAccepted({ runId: 'r1', sessionId: 's1' }));
+  s = m.streamReducer(s, m.streamStarted({ runId: 'r1' }));
+  s = m.streamReducer(s, m.streamTokenAppended('A 会话的正文'));
+  assertEq(s.stage, 'streaming', '前置条件：A 会话正在流式');
+
+  // 重选**当前**会话不得清 —— 否则用户在列表里点一下自己就丢了正文
+  const same = m.streamReducer(s, m.sessionActivated('s1'));
+  assertEq(same.text, 'A 会话的正文', '重选当前会话不得清掉正文');
+
+  // 不知道属于谁时也要宽松（外部直连 agent:run 的场景）——"知道才清"
+  let unknown = m.streamReducer(undefined, INIT);
+  unknown = m.streamReducer(unknown, m.streamStarted({ runId: 'r2' }));
+  unknown = m.streamReducer(unknown, m.streamTokenAppended('无主正文'));
+  const unknownKept = m.streamReducer(unknown, m.sessionActivated('s9'));
+  assertEq(unknownKept.text, '无主正文', 'sessionId 未知时不得清');
+
+  const out = m.streamReducer(s, m.sessionActivated('s2'));
+  assertEq(out.text, '', '切到别的会话必须清空上一轮正文（否则会长在新会话的面板里）');
+  assertEq(out.stage, 'idle', '切到别的会话必须回到 idle');
+  assertEq(out.sessionId, null, 'sessionId 必须一并清掉');
+});
+
+/** 断言 ⑧：真 store 集成烟雾断言 —— reset 后 subscribe 照常收到通知。 */
 check('stream.reset-notifies-subscribers', (m) => {
   const store = m.store;
   store.dispatch(m.streamStarted({ runId: 'r1' }));
@@ -225,8 +251,8 @@ const VARIANTS = [
   {
     name: 'V4 runAccepted 顺手推进 stage（把回执当成首帧）',
     file: 'stream',
-    from: '    runAccepted(state, action: PayloadAction<string>) {\n      state.runId = action.payload;\n    },',
-    to: '    runAccepted(state, action: PayloadAction<string>) {\n      state.runId = action.payload;\n      state.stage = \'streaming\';\n    },',
+    from: '      state.runId = action.payload.runId;\n      state.sessionId = action.payload.sessionId;',
+    to: '      state.runId = action.payload.runId;\n      state.sessionId = action.payload.sessionId;\n      state.stage = \'streaming\';',
     kills: 'stream.runAccepted-is-not-first-byte',
   },
   {
@@ -236,6 +262,13 @@ const VARIANTS = [
     from: '      return { ...initialState };',
     to: "      return { text: '', runId: null, usage: null, stage: 'done', paused: false, error: null };",
     kills: 'stream.reset-clears-stage',
+  },
+  {
+    name: 'V7 切会话不清上一轮流状态（按会话判断被写掉）',
+    file: 'stream',
+    from: '      if (state.sessionId !== null && state.sessionId !== action.payload) {',
+    to: '      if (state.sessionId !== null && false) {',
+    kills: 'stream.switch-session-clears',
   },
   {
     // 预期存活（expectSurvive）：无可观测差异。若哪天被杀，说明机理判断错了。

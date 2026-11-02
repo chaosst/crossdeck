@@ -16,7 +16,7 @@ import type { SessionMessageDetail } from "@crossdeck/contract";
 import { store, type RootState } from "../store";
 import { logger } from "../utils/logger";
 import { sessionActivated } from "../store/slices/sessions";
-import type { StreamStage } from "../store/slices/stream";
+import { runAccepted, type StreamStage } from "../store/slices/stream";
 
 const TAG = 'ResumeChat'
 
@@ -118,7 +118,9 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
         sessionId = created.id;
       }
       this.setStateHandler("inputStr", "");
-      await startAgentRun(sessionId, input);
+      const { runId } = await startAgentRun(sessionId, input);
+      // 回执里带上会话：切会话时 store 才判断得出「面板上这行字是不是上一个会话的」。
+      store.dispatch(runAccepted({ runId, sessionId }));
       // 用户消息与助理占位在主进程里已经落库，重拉一次就到位（不再本地拼历史）。
       await this.reloadHistory();
     } catch (err) {

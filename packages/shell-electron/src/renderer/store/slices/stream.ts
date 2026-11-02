@@ -1,10 +1,18 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { Usage } from '@crossdeck/contract';
+import { sessionActivated } from './sessions';
 
 /** 流式阶段。落在本组件 DOM 的 data-stage 上，供 selfcheck 断言。 */
 export type StreamStage = 'idle' | 'streaming' | 'done' | 'error';
 
 export interface StreamState {
+  /**
+   * 这一轮属于哪个会话。`null` = 不知道（外部直连 `agent:run`，没走 invoke 回执）。
+   *
+   * 存在的唯一理由：切会话时能判断「面板上这行字是不是上一个会话的」——
+   * 没有它就只能整块清掉，或者干脆让旧流画到新会话里。
+   */
+  sessionId: string | null;
   /** 累计输出文本，增量追加。 */
   text: string;
   /** 正在跑的 run；null = 没有。 */
@@ -18,6 +26,7 @@ export interface StreamState {
 }
 
 const initialState: StreamState = {
+  sessionId: null,
   text: '',
   runId: null,
   usage: null,
@@ -59,9 +68,10 @@ const streamSlice = createSlice({
       state.stage = 'error';
     },
 
-    /** invoke 回执到达，流还没开始 —— stage 留在 idle。 */
-    runAccepted(state, action: PayloadAction<string>) {
-      state.runId = action.payload;
+    /** invoke 回执到达，流还没开始 —— stage 留在 idle。顺带记下这轮属于哪个会话。 */
+    runAccepted(state, action: PayloadAction<{ runId: string; sessionId: string }>) {
+      state.runId = action.payload.runId;
+      state.sessionId = action.payload.sessionId;
     },
 
     pausedSet(state, action: PayloadAction<boolean>) {
@@ -72,6 +82,23 @@ const streamSlice = createSlice({
     streamReset() {
       return { ...initialState };
     },
+  },
+
+  /**
+   * 切到**别的**会话时，这一轮的正文必须一起清掉。
+   *
+   * 不清的后果：A 会话流式中途去列表点开 B，B 的聊天面板里会长出 A 的正文 ——
+   * 而且（自流式订阅上移到窗口之后）它还在继续长。
+   * 清的前提是**知道**这轮属于谁：`sessionId === null` 表示不知道（外部直连
+   * `agent:run` 的场景），这时保持宽松，清了反而会误伤。
+   */
+  extraReducers: (builder) => {
+    builder.addCase(sessionActivated, (state, action) => {
+      if (state.sessionId !== null && state.sessionId !== action.payload) {
+        return { ...initialState };
+      }
+      return state;
+    });
   },
 });
 
