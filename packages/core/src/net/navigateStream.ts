@@ -216,6 +216,15 @@ export class NavigateStream {
         });
         return false;
 
+      case 'action':
+        // 原样往上传，**不在这里校验 URL** —— 校验属于执行那一刻（action:open）。
+        this.#sink.onAction?.({
+          actionId: action.actionId,
+          label: action.label,
+          url: action.url,
+        });
+        return false;
+
       case 'done':
         this.settleEnd();
         return true;

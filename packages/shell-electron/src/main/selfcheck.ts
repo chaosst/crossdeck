@@ -5,6 +5,7 @@ import { IPC } from '@crossdeck/contract';
 import type { PerfSnapshot } from '@crossdeck/contract';
 import { activeRunCount, droppedAfterTerminal, undeliveredTerminalCount } from './agentRuntime.js';
 import {
+  FAKE_ACTION_LABEL,
   FAKE_NORMAL_CHUNKS,
   FAKE_NORMAL_TEXT,
   FAKE_SCENARIO_PROMPTS,
@@ -242,6 +243,8 @@ export interface SelfCheckProbe {
     sessionClicked: boolean;
     hasUserEcho: boolean;
     hasAnswer: boolean;
+    /** 动作卡片（T12）：落库的 action 事件能不能被画成可点的卡片 */
+    hasActionCard?: boolean;
     textLength: number;
   };
   /**
@@ -902,8 +905,9 @@ function buildProbeScript(
     out.uiUpload.errorText = errEl ? errEl.textContent : null;
   }
 
+  // 点 action 场景那个会话：它同时带正文和一张动作卡片，一次点击验两件事
   const pick = Array.from(document.querySelectorAll('button')).find(
-    (b) => (b.textContent || '').indexOf('selfcheck-nav-normal') >= 0,
+    (b) => (b.textContent || '').indexOf('selfcheck-nav-action') >= 0,
   );
   if (pick) {
     pick.click();
@@ -914,8 +918,11 @@ function buildProbeScript(
   await new Promise((r) => setTimeout(r, 700));
   const chatText = document.body.innerText || '';
   out.uiHistory.textLength = chatText.length;
-  out.uiHistory.hasUserEcho = chatText.indexOf(NAV.prompts.normal) >= 0;
+  // 用户那句要对**这个**会话的 prompt —— 点的是 action 场景，不是 normal
+  out.uiHistory.hasUserEcho = chatText.indexOf(NAV.prompts.action) >= 0;
   out.uiHistory.hasAnswer = chatText.indexOf(${JSON.stringify(FAKE_NORMAL_TEXT)}) >= 0;
+  // 动作卡片：落库的 action 事件必须被画出来（此前这条链路一段都没被跑过）
+  out.uiHistory.hasActionCard = chatText.indexOf(${JSON.stringify(FAKE_ACTION_LABEL)}) >= 0;
 
   // 收尾必须还原成脚本上游：不还原的话报告落盘后进程还指着一个即将被关掉的假服务器，
   // 后面任何一次误触发的 run 都会变成一个莫名其妙的连接错误。
@@ -1414,6 +1421,12 @@ export async function runSelfCheck(
     if (probe.uiHistory?.hasAnswer !== true) {
       failures.push('聊天区没有渲染出助手正文 —— 落库的正文与读回来的不一致');
     }
+    if (probe.uiHistory?.hasActionCard !== true) {
+      failures.push(
+        `聊天区没有渲染出动作卡片「${FAKE_ACTION_LABEL}」—— ` +
+          '上游 action 帧 → 事件 → 落库 → 卡片这四段里有断的（T12 一直是空档）',
+      );
+    }
 
     // ── 流式中途切页签：帧不能因为聊天页被卸载而丢 ──
     const tabSwitch = probe.uiTabSwitch;
@@ -1475,6 +1488,7 @@ export async function runSelfCheck(
       killed: { terminal: 'error', code: 'UPSTREAM', minTokens: FAKE_NORMAL_CHUNKS.length },
       'upstream-error': { terminal: 'error', code: 'UPSTREAM', minTokens: 3 },
       abort: { terminal: 'error', code: 'ABORTED', minTokens: 1 },
+      action: { terminal: 'done', code: null, minTokens: FAKE_NORMAL_CHUNKS.length },
     };
 
     for (const [key, want] of Object.entries(navExpect)) {
@@ -1519,6 +1533,12 @@ export async function runSelfCheck(
             `(${String(rec.textLength)}) 不一致 —— 渲染层漏帧或多帧`,
         );
       }
+    }
+
+    // 动作帧必须真的变成事件：少了这一条，卡片断言挂了也说不清是映射断了还是渲染断了
+    const navActionRec = probe.navScenarios?.action;
+    if (navActionRec !== undefined && !(navActionRec.events ?? []).includes('action')) {
+      failures.push('action 场景里没有收到 action 事件 —— 上游动作帧没被映射成事件');
     }
 
     const navNormal = probe.navScenarios?.normal;

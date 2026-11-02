@@ -284,6 +284,7 @@ function fakeDeps() {
 /** 收集 sink 回调 + 诊断事件。 */
 function collect() {
   const chunks = [];
+  const actions = [];
   const terminals = [];
   let resolveTerminal = () => {};
   const terminalArrived = new Promise((r) => {
@@ -291,10 +292,12 @@ function collect() {
   });
   return {
     chunks,
+    actions,
     terminals,
     terminalArrived,
     sink: {
       onChunk: (text) => chunks.push(text),
+      onAction: (a) => actions.push(a),
       onEnd: () => {
         terminals.push('end');
         resolveTerminal('end');
@@ -399,6 +402,9 @@ console.log('\n── ② 正常路径：逐帧 → done ──');
     w.token('你');
     w.token('好');
     w.frame('sources', JSON.stringify(['a.md', 'a.md', 'b.md']));
+    w.frame('action', JSON.stringify({ actionId: 'a1', label: '查看简历原文', url: 'https://example.com/wiki/1' }));
+    // 负例：没有 url 的动作帧 —— 没有去处，必须当成"未识别"上报，而不是渲染一张点不动的卡片
+    w.frame('action', JSON.stringify({ actionId: 'a2', label: '没有链接' }));
     w.done();
     w.end();
   };
@@ -424,6 +430,19 @@ console.log('\n── ② 正常路径：逐帧 → done ──');
     src !== undefined && JSON.stringify(src.sources) === JSON.stringify(['a.md', 'b.md']),
     JSON.stringify(src));
   check('② sources **不拼进正文**', h.text() === '你好', h.text());
+
+  check('② action 帧被识别（这是 T12 之前整条路都没接上的那一段）',
+    h.actions.length === 1, JSON.stringify(h.actions));
+  check('② action 字段原样搬过来（id / label / url 一个都不能丢）',
+    h.actions.length === 1 &&
+      h.actions[0].actionId === 'a1' &&
+      h.actions[0].label === '查看简历原文' &&
+      h.actions[0].url === 'https://example.com/wiki/1',
+    JSON.stringify(h.actions[0]));
+  check('② 缺 url 的 action 帧被当成未识别（上报，不当卡片）',
+    diag.some((d) => d.type === 'unknown-event' && d.event === 'action'),
+    JSON.stringify(diag.filter((d) => d.type === 'unknown-event')));
+  check('② action **不拼进正文**', h.text() === '你好', h.text());
 }
 
 // ═════════════════════════════════════════════════════════════

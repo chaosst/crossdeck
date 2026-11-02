@@ -36,6 +36,18 @@ export type NavigateAction =
       readonly resultPreview: string;
       readonly ok: boolean;
     }
+  /**
+   * 端侧动作（上游 `event: action`）。**这一层不做 URL 校验** ——
+   * 映射只回答"这帧在说什么"，能不能执行是 `action:open` 那一关的事
+   * （三道校验 + 23 条负例在 `core/net/openUrl.ts`）。在这里校验会让
+   * "上游给了一个坏链接"表现为"卡片莫名消失"，比渲染出来却点不动更难查。
+   */
+  | {
+      readonly kind: 'action';
+      readonly actionId: string;
+      readonly label: string;
+      readonly url: string;
+    }
   /** 本轮结束。 */
   | { readonly kind: 'done' }
   /** 上游错误（已解出可读消息）。 */
@@ -48,6 +60,8 @@ export const NAVIGATE_EVENTS = {
   token: 'token',
   sources: 'sources',
   tool: 'tool',
+  /** 端侧动作卡片：`{actionId, label, url}`。 */
+  action: 'action',
   done: 'done',
   error: 'error',
   /** done 之前可选的**权威全文**帧（仅当增量拼接 ≠ 权威全文时才出现） */
@@ -71,6 +85,9 @@ export function mapNavigateFrame(frame: SseFrame): NavigateAction {
 
     case NAVIGATE_EVENTS.tool:
       return decodeTool(frame.data);
+
+    case NAVIGATE_EVENTS.action:
+      return decodeAction(frame.data);
 
     case NAVIGATE_EVENTS.done:
       // 不走 JSON 分支：字面量比对。上游若写成带引号也认 —— 宽容但不猜测。
@@ -148,5 +165,30 @@ function decodeTool(data: string): NavigateAction {
     };
   } catch {
     return { kind: 'unknown', event: NAVIGATE_EVENTS.tool, raw: data };
+  }
+}
+
+/**
+ * 解动作帧；形状不对就当作未识别。
+ *
+ * `url` 是必需项 —— 没有它这张卡片无处可去，与其渲染一个点了没反应的按钮，
+ * 不如走"未识别"那条路被上报出来。`label` 缺失时用 url 顶上（卡片总得有字）。
+ */
+function decodeAction(data: string): NavigateAction {
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    const url = parsed.url;
+    if (typeof url !== 'string' || url.length === 0) {
+      return { kind: 'unknown', event: NAVIGATE_EVENTS.action, raw: data };
+    }
+    const label = typeof parsed.label === 'string' && parsed.label.length > 0 ? parsed.label : url;
+    return {
+      kind: 'action',
+      actionId: typeof parsed.actionId === 'string' && parsed.actionId.length > 0 ? parsed.actionId : label,
+      label,
+      url,
+    };
+  } catch {
+    return { kind: 'unknown', event: NAVIGATE_EVENTS.action, raw: data };
   }
 }

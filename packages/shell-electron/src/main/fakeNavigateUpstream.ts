@@ -33,7 +33,13 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { NAVIGATE_CHAT_PATH, NAVIGATE_DONE_LITERAL } from '@crossdeck/core';
 
-export type FakeScenario = 'normal' | 'silent-close' | 'killed' | 'upstream-error' | 'abort';
+export type FakeScenario =
+  | 'normal'
+  | 'silent-close'
+  | 'killed'
+  | 'upstream-error'
+  | 'abort'
+  | 'action';
 
 /**
  * 场景 → 触发它的 prompt。
@@ -48,10 +54,14 @@ export const FAKE_SCENARIO_PROMPTS: Readonly<Record<FakeScenario, string>> = {
   killed: 'selfcheck:navigate-killed',
   'upstream-error': 'selfcheck:navigate-error',
   abort: 'selfcheck:navigate-abort',
+  action: 'selfcheck:navigate-action',
 };
 
 /** 正常场景吐的文本，切成 5 片 —— 客户端应当分 5 次 `onChunk` 收到（不是一次到齐）。 */
 export const FAKE_NORMAL_CHUNKS: readonly string[] = ['SELF', 'CHECK-', 'NAV', 'IGATE-', 'OK!!'];
+
+/** 动作帧的卡片文案 —— 自检要按它去 DOM 里找，写两遍必然对不上。 */
+export const FAKE_ACTION_LABEL = '查看简历原文';
 
 /** 拼起来的全文（断言 textLength 用它，避免在断言里手抄一遍字符串）。 */
 export const FAKE_NORMAL_TEXT = FAKE_NORMAL_CHUNKS.join('');
@@ -175,6 +185,22 @@ export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream>
       stop();
       switch (scenario) {
         case 'normal':
+          frame('done', NAVIGATE_DONE_LITERAL);
+          stats.ended.push(scenario);
+          res.end();
+          return;
+        case 'action':
+          // 端侧动作帧：done 之前推，端侧应渲染出一张可点击的卡片。
+          // 这一帧在 navigate 侧还没有实现（见计划 §10），所以由假上游来演 ——
+          // 否则"映射 → 事件 → 落库 → 卡片"这四段没有一段真的被跑过。
+          frame(
+            'action',
+            JSON.stringify({
+              actionId: 'a1',
+              label: FAKE_ACTION_LABEL,
+              url: 'https://example.com/wiki/resume',
+            }),
+          );
           frame('done', NAVIGATE_DONE_LITERAL);
           stats.ended.push(scenario);
           res.end();
