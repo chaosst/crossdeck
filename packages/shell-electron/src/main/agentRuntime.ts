@@ -6,6 +6,8 @@ import { AgentRuntime, DEFAULT_FIRST_FRAME_TIMEOUT_MS, ScriptedModel } from '@cr
 import { createNavigateClient } from './navigate/client.js';
 import { NavigateModel } from './navigate/model.js';
 import { currentBaseUrl, upstreamStatus } from './navigate/session.js';
+import { sessionRepo } from './sessionDb/index.js';
+import { RunWriter } from './sessionWriter.js';
 import { navigateTokenStore } from './navigate/tokenStore.js';
 
 /**
@@ -72,6 +74,22 @@ export function activeUpstream(): NavigateUpstreamStatus {
   return upstreamStatus();
 }
 
+/** runId → 落库写入器。 */
+const writers = new Map<string, RunWriter>();
+/** 已建好、但还没拿到 runId 的写入器（`startRun` 同步发 start，会早于登记）。 */
+let pendingWriter: RunWriter | null = null;
+
+function writerFor(runId: string): RunWriter | null {
+  const known = writers.get(runId);
+  if (known !== undefined) return known;
+  if (pendingWriter === null) return null;
+  // 首个事件到达时就认领：`start` 是在 startRun 里同步发出的，早于下面的 writers.set。
+  pendingWriter.runId = runId;
+  writers.set(runId, pendingWriter);
+  pendingWriter = null;
+  return writers.get(runId) ?? null;
+}
+
 /** runId → 发起它的窗口。事件要回到"自己那个窗口"，不能广播给所有人。 */
 const runWindows = new Map<string, number>();
 
@@ -113,9 +131,19 @@ runtime.bus.subscribe((event) => {
     } else {
       undeliveredTerminal += 1;
     }
-    return;
+  } else {
+    deliver(windowId, event);
   }
-  deliver(windowId, event);
+
+  // 落库与投递互不影响：写失败不该让用户看不到已经收到的字。
+  const writer = writerFor(event.runId);
+  if (writer !== null) {
+    writer.push(event);
+    if (event.type === 'done' || event.type === 'error') {
+      writers.delete(event.runId);
+      writer.stop();
+    }
+  }
 });
 
 export interface RunHandle {
@@ -123,7 +151,38 @@ export interface RunHandle {
 }
 
 export function runScripted(windowId: number, sessionId: string, input: string): RunHandle {
+  const repo = sessionRepo();
+  // 先落两条消息：用户那句是完整内容，助理那条是「流式中」占位。
+  // 占位必须先写 —— 流到一半被强杀时，重启后要靠它认出「上次异常退出」。
+  repo.insertMessage({ sessionId, role: 'user', content: input, status: 'done', runId: null });
+  const assistant = repo.insertMessage({
+    sessionId,
+    role: 'assistant',
+    content: '',
+    status: 'streaming',
+    runId: null,
+  });
+
+  const writer = new RunWriter({
+    repo,
+    sessionId,
+    messageId: assistant.messageId,
+    now: deps.now,
+    every: deps.every,
+    newId: deps.newId,
+  });
+  pendingWriter = writer;
+
   const { runId } = runtime.startRun({ sessionId, input });
+
+  writer.runId = runId;
+  if (pendingWriter === writer) {
+    writers.set(runId, writer);
+    pendingWriter = null;
+  } else if (!writers.has(runId)) {
+    // 首个事件已经在 startRun 里认领过了，这里只补齐 runId。
+    writers.set(runId, writer);
+  }
 
   runWindows.set(runId, windowId);
 
@@ -156,8 +215,18 @@ export function abortRun(runId: string): boolean {
 /** 会话被删 / 窗口关闭时调用，避免调度泄漏。 */
 export function stopAllRuns(): void {
   runtime.stopAll();
+  for (const writer of writers.values()) writer.stop();
+  writers.clear();
+  pendingWriter = null;
   runWindows.clear();
   earlyEvents.clear();
+}
+
+/** 关窗前把未落盘的草稿写完（不走 abort，不发终态）。 */
+export function flushAllRuns(): void {
+  for (const writer of writers.values()) writer.stop();
+  writers.clear();
+  pendingWriter = null;
 }
 
 export function activeRunCount(): number {
