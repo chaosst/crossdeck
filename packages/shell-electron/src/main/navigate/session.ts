@@ -27,16 +27,28 @@ import {
   revokeUpstreamSession,
   type LoginBody,
 } from './auth.js';
-import { navigateSettings } from './settings.js';
 import { navigateTokenStore } from './tokenStore.js';
 import { normalizeUpstreamUrl } from './upstream.js';
 
 /** 暂时固定：配置入口已砍，恢复时改回读 navigateSettings。 */
 const BASE_URL = 'http://127.0.0.1:3001'
 
-/** 当前上游根地址；当前固定，`null` = 脚本上游那条分支暂不可达。 */
+/**
+ * 进程内覆盖：`setUpstreamUrl` 写的，自检用它指向假 SSE 服务器。
+ *
+ * 不落盘 —— 落盘会让自检那次临时端口留在用户配置里，下次启动读到一个已关掉的地址。
+ * `{ url: null }` 是**显式要求**脚本上游，与"没被覆盖"（走固定地址）是两件事。
+ */
+let override: { url: string | null } | null = null
+
+/** 当前上游根地址：固定值，或覆盖成别的地址 / `null`（脚本上游）。 */
 export function currentBaseUrl(): string | null {
-  return BASE_URL
+  return override === null ? BASE_URL : override.url
+}
+
+/** 直接改上游（不经 IPC）：自检把进程切到脚本上游时用。 */
+export function overrideBaseUrl(url: string | null): void {
+  override = { url }
 }
 
 /**
@@ -77,7 +89,7 @@ export function setUpstreamUrl(raw: string | null): NavigateStatus {
   const decision = normalizeUpstreamUrl(raw);
   if (!decision.ok) throw new AppError('BAD_REQUEST', decision.message);
 
-  navigateSettings.setUpstreamUrl(decision.value);
+  override = { url: decision.value };
   return navigateStatus();
 }
 

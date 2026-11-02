@@ -103,7 +103,7 @@ const runWindows = new Map<string, number>();
 const earlyEvents = new Map<string, AgentStreamEvent[]>();
 
 /**
- * 没人可投递而被丢弃的**终态**事件数 —— 应当恒为 0。
+ * 送不到窗口的**终态**事件数 —— 应当恒为 0（窗口中途被关掉也算，那种情况自检不会出现）。
  * 这个失败模式在 UI 上只表现为"最后一帧卡住"，排查时不会往"事件路由写反了"想，
  * 所以给它一个计数器让它在报告里显性出现。
  */
@@ -112,8 +112,20 @@ let undeliveredTerminal = 0;
 function deliver(windowId: number, event: AgentStreamEvent): void {
   const wc = webContents.fromId(windowId);
   // 窗口可能在流式过程中被关掉 —— 静默失败是正确的，不该因此中断 run。
-  if (!wc || wc.isDestroyed()) return;
+  // 但终态送不到就等于"用户永远等不到收尾"，必须计数，否则只表现为 UI 卡住。
+  if (!wc || wc.isDestroyed()) {
+    if (event.type === 'done' || event.type === 'error') undeliveredTerminal += 1;
+    return;
+  }
   wc.send(IPC.agentStream, event);
+}
+
+/** 把登记窗口之前到达的事件补发出去；终态也在其中（同步失败时终态会早于登记）。 */
+function flushBuffered(runId: string, windowId: number): void {
+  const buffered = earlyEvents.get(runId);
+  if (buffered === undefined) return;
+  earlyEvents.delete(runId);
+  for (const event of buffered) deliver(windowId, event);
 }
 
 runtime.bus.subscribe((event) => {
@@ -123,14 +135,11 @@ runtime.bus.subscribe((event) => {
   if (event.type === 'done' || event.type === 'error') runWindows.delete(event.runId);
 
   if (windowId === undefined) {
-    // 只有非终态事件值得缓冲；终态意味着 run 已结束，再缓冲只会变成内存泄漏。
-    if (event.type !== 'done' && event.type !== 'error') {
-      const buffered = earlyEvents.get(event.runId);
-      if (buffered === undefined) earlyEvents.set(event.runId, [event]);
-      else buffered.push(event);
-    } else {
-      undeliveredTerminal += 1;
-    }
+    // 还没登记窗口：`start` 同步发，**失败也可能同步**（没凭据时模型立刻抛错），
+    // 所以终态不能丢，一并缓冲，登记时按原顺序补发。
+    const buffered = earlyEvents.get(event.runId);
+    if (buffered === undefined) earlyEvents.set(event.runId, [event]);
+    else buffered.push(event);
   } else {
     deliver(windowId, event);
   }
@@ -186,12 +195,8 @@ export function runScripted(windowId: number, sessionId: string, input: string):
 
   runWindows.set(runId, windowId);
 
-  // 补发在登记之前到达的事件（正常情况下只有 start 一个）
-  const buffered = earlyEvents.get(runId);
-  if (buffered !== undefined) {
-    earlyEvents.delete(runId);
-    for (const event of buffered) deliver(windowId, event);
-  }
+  // 补发在登记之前到达的事件（正常情况下是 start，失败时还带一个终态）
+  flushBuffered(runId, windowId);
 
   return { runId };
 }

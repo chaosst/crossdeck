@@ -28,6 +28,7 @@ import {
   listWorkspaces,
   loginNavigateGuest,
   logoutNavigate,
+  onSessionChanged,
   onUpdateStatus,
   openWindow,
   readFileText,
@@ -161,6 +162,28 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * 会话列表跟着主进程广播走。
+   *
+   * 没有它的话列表只在启动那一刻对齐一次：别的窗口新建/删除的会话在本窗口永远不出现，
+   * 换账号换了库也还显示上一个账号的列表 —— 而"每账号一个库"正是为了防止这件事。
+   */
+  useEffect(() => {
+    return onSessionChanged((change) => {
+      if (change.reason === 'deleted') {
+        dispatch(sessionRemoved(change.sessionId));
+        return;
+      }
+      // 换库时激活项一定失效（指向的是另一份文件里的 id）
+      if (change.reason === 'switched') dispatch(sessionActivated(null));
+      void listSessions()
+        .then((list) => dispatch(sessionsReplaced(list)))
+        .catch(() => {
+          /* 拉不到就保留旧列表：清空会让人以为会话都没了 */
+        });
+    });
+  }, [dispatch]);
 
   const handleCreate = useCallback(async () => {
     setActionError(null);
@@ -387,9 +410,9 @@ export default function App() {
     return tabStyle
   }
 
-  const TabBtn: React.FC<{label: string, children: ReactNode, actived: Tab}> = ({label, children, actived}) => {
+  const TabBtn: React.FC<{label: string, children: ReactNode, actived: Tab, testId: string}> = ({label, children, actived, testId}) => {
     return (
-      <div className='items-center flex py-2 text-muted' style={getTabStyle(actived)} onClick={()=>setActivedTab(actived)}>
+      <div data-testid={testId} className='items-center flex py-2 text-muted' style={getTabStyle(actived)} onClick={()=>setActivedTab(actived)}>
         { children }
         <span className='text-xs px-1'>{label}</span>
       </div>
@@ -440,13 +463,13 @@ export default function App() {
 
       <main className="flex-1 flex mx-auto w-full h-full overflow-hidden">
         <div className='w-26 flex flex-col items-start h-full px-2 py-2'>
-          <TabBtn label="简历问答" actived={Tab.CHAT} >
+          <TabBtn label="简历问答" testId="tab-chat" actived={Tab.CHAT} >
             <MessageCircle className='size-5' />
           </TabBtn>
-          <TabBtn label="应用环境" actived={Tab.ENV} >
+          <TabBtn label="应用环境" testId="tab-env" actived={Tab.ENV} >
             <Monitor className='size-5' />
           </TabBtn>
-          <TabBtn label="应用能力" actived={Tab.ABILITY} >
+          <TabBtn label="应用能力" testId="tab-ability" actived={Tab.ABILITY} >
             <Box className='size-5' />
           </TabBtn>
         </div>

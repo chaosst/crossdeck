@@ -234,6 +234,7 @@ export default function Login() {
           {/* 次操作 —— 对齐上游已有的 guest 通道（仍未接线） */}
           <button
             type="button"
+            data-testid="login-guest"
             onClick={loginAsGuest}
             className="h-10 w-full rounded-[10px] border border-line-brand bg-white text-[13px] font-medium text-brand transition hover:border-brand hover:bg-brand-tint-soft"
           >

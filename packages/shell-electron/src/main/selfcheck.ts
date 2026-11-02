@@ -12,6 +12,7 @@ import {
 } from './fakeNavigateUpstream.js';
 import type { FakeNavigateUpstream } from './fakeNavigateUpstream.js';
 import { resetPerfForSelfCheck } from './perf.js';
+import { setUpstreamUrl } from './navigate/session.js';
 import { runtimeConfig } from './runtimeConfig.js';
 import { currentUpdateStatus, resetUpdateStateForSelfCheck } from './updater.js';
 
@@ -130,6 +131,8 @@ export function prepareScopeFixture(outDir: string): ScopeFixture {
 export interface SelfCheckProbe {
   hasBridge: boolean;
   bridgeMethods: string[];
+  /** 进主界面后能把上游切回脚本上游（老探针不依赖凭据的前提） */
+  bootUpstreamScripted?: boolean;
   systemInfo?: unknown;
   systemInfoOk: boolean;
   sessionListOk: boolean;
@@ -187,6 +190,8 @@ export interface SelfCheckProbe {
   toolRunLastEvent?: string | null;
   toolRunError?: string;
   // ── M4：渲染层文件树 + 越界可见化（驱动真实点击，让截图也成为证据）──
+  uiAbilityTab?: boolean;
+  uiChatTab?: boolean;
   uiEntryCount?: number;
   uiEmptyNotice?: boolean;
   uiEscapeClicked?: boolean;
@@ -222,6 +227,13 @@ export interface SelfCheckProbe {
   /** 登录结果里**不该**出现 token 字段（凭据只活主进程） */
   navLoginHasTokenField?: boolean;
   navUpstreamRestored?: boolean;
+  /** 库里的消息能不能被读回来画在聊天区（会话持久化的用户可见出口） */
+  uiHistory?: {
+    sessionClicked: boolean;
+    hasUserEcho: boolean;
+    hasAnswer: boolean;
+    textLength: number;
+  };
   domStatus: string | null;
   domText: string;
 }
@@ -329,6 +341,14 @@ function buildProbeScript(
 
   out.hasBridge = typeof window.bridge === 'object' && window.bridge !== null;
   out.bridgeMethods = out.hasBridge ? Object.keys(window.bridge).sort() : [];
+
+  // 主界面是靠登录过的凭据进来的（进程里的上游此刻还指着假 SSE 服务器）。
+  // 下面这批探针跑的是**脚本上游**、不该依赖凭据，所以先把它切回去 —— 顺带验了
+  // 「配置通道能把上游从 navigate 切回脚本」这一条。
+  try {
+    const back = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: null });
+    out.bootUpstreamScripted = back.upstream.kind === 'scripted';
+  } catch (e) { out.bootUpstreamScripted = false; }
 
   try {
     const info = await window.bridge.invoke('system:info');
@@ -541,6 +561,17 @@ function buildProbeScript(
   // M4 ③：驱动一次**真实 UI 点击**，让"越界被拒"进入归档截图。
   // 断言能证明逻辑对，但截图是人一眼能核验的东西 —— 两者都要。
   // ─────────────────────────────────────────────────────────────
+  // 工作区与更新卡片在「应用能力」页签里：不切页签它们压根不在 DOM 里。
+  const clickTab = async (testId) => {
+    const el = document.querySelector('[data-testid="' + testId + '"]');
+    if (!el) return false;
+    el.click();
+    // 等 React 把新页签画出来 —— 同一 tick 里读 DOM 拿到的还是旧页签。
+    await new Promise((r) => setTimeout(r, 300));
+    return true;
+  };
+  out.uiAbilityTab = await clickTab('tab-ability');
+
   // 等文件树加载出来（browse 是挂载后异步发的，不一定已经回来）
   for (let i = 0; i < 30; i++) {
     if (document.querySelector('[data-testid="ws-entry"]')) break;
@@ -632,6 +663,9 @@ function buildProbeScript(
   // 从 main 内部直接跑，第二三处就无从观察了。
   // ─────────────────────────────────────────────────────────────
   out.navScenarios = {};
+  // 五个流式场景要读聊天页上的 data-stage / data-len，先把页签切回去
+  out.uiChatTab = await clickTab('tab-chat');
+
   try {
     const st = await window.bridge.invoke('navigate:set-upstream', { upstreamUrl: NAV.baseUrl });
     out.navUpstreamConfigured = st.upstream.kind === 'navigate' && st.upstream.baseUrl === NAV.baseUrl;
@@ -724,6 +758,28 @@ function buildProbeScript(
     out.navUpstreamRestored = false;
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // 会话持久化的用户可见出口：库里的消息要能被读回来画在聊天区。
+  // 走真实点击：切到能力页 → 点 normal 场景那个会话 → 切回聊天页 → 读文本。
+  // ─────────────────────────────────────────────────────────────
+  out.uiHistory = { sessionClicked: false, hasUserEcho: false, hasAnswer: false, textLength: 0 };
+  await clickTab('tab-ability');
+  await new Promise((r) => setTimeout(r, 400));
+  const pick = Array.from(document.querySelectorAll('button')).find(
+    (b) => (b.textContent || '').indexOf('selfcheck-nav-normal') >= 0,
+  );
+  if (pick) {
+    pick.click();
+    out.uiHistory.sessionClicked = true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await clickTab('tab-chat');
+  await new Promise((r) => setTimeout(r, 700));
+  const chatText = document.body.innerText || '';
+  out.uiHistory.textLength = chatText.length;
+  out.uiHistory.hasUserEcho = chatText.indexOf(NAV.prompts.normal) >= 0;
+  out.uiHistory.hasAnswer = chatText.indexOf(${JSON.stringify(FAKE_NORMAL_TEXT)}) >= 0;
+
   const statusEl = document.querySelector('[data-testid="boot-status"]');
   out.domStatus = statusEl ? statusEl.getAttribute('data-state') : null;
   out.domText = document.body.innerText.slice(0, 1500);
@@ -788,6 +844,31 @@ async function waitForReady(win: BrowserWindow, timeoutMs: number): Promise<stri
   return null;
 }
 
+/** 登录页上「获取体验账号」就地点击后，等主界面出现（或登录报错）为止。 */
+async function driveGuestLogin(win: BrowserWindow): Promise<{ ok: boolean; reason: string | null }> {
+  const clicked = (await win.webContents.executeJavaScript(
+    `(() => { const b = document.querySelector('[data-testid="login-guest"]'); if (!b) return false; b.click(); return true; })()`,
+  )) as boolean;
+  if (!clicked) return { ok: false, reason: '登录页上找不到「获取体验账号」按钮' };
+
+  const started = Date.now();
+  while (Date.now() - started < 15_000) {
+    if (win.isDestroyed()) return { ok: false, reason: '窗口在登录过程中被销毁' };
+    const state = (await win.webContents.executeJavaScript(
+      `(() => {
+        const err = document.querySelector('[data-testid="login-error"]');
+        const boot = document.querySelector('[data-testid="boot-status"]');
+        return { error: err ? err.textContent : null, hasBoot: boot !== null };
+      })()`,
+    )) as { error: string | null; hasBoot: boolean };
+    if (state.hasBoot) return { ok: true, reason: null };
+    // 报错就立刻停：再等 15s 只会把一个明确的失败拖成超时。
+    if (state.error !== null) return { ok: false, reason: String(state.error) };
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return { ok: false, reason: '15s 内既没进主界面也没报错' };
+}
+
 export async function runSelfCheck(
   win: BrowserWindow,
   outDir: string,
@@ -823,9 +904,31 @@ export async function runSelfCheck(
       win.webContents.once('did-finish-load', () => resolve());
     });
 
+    // 没有凭据时入口必须把人挡在登录页 —— 这是产品行为，也是后面所有 DOM 断言的前提。
+    const gate = (await win.webContents.executeJavaScript(
+      `(() => ({
+        hasGuestButton: document.querySelector('[data-testid="login-guest"]') !== null,
+        hash: location.hash,
+      }))()`,
+    )) as { hasGuestButton: boolean; hash: string };
+    if (!gate.hasGuestButton) {
+      failures.push(`没有凭据时入口没有停在登录页（hash=${gate.hash}）—— 未登录也能进主界面`);
+    }
+
+    // 假上游先切好再点登录：走的是与 IPC handler 同一个用例函数，
+    // 只是把"点按钮"这一步留给真实点击，不抄近路。
+    if (fake !== null) {
+      setUpstreamUrl(fake.baseUrl);
+      const login = await driveGuestLogin(win);
+      if (!login.ok) failures.push(`界面点「获取体验账号」没能登录：${String(login.reason)}`);
+    }
+
     domStatus = await waitForReady(win, 20_000);
-    if (domStatus !== 'ready') {
-      failures.push(domStatus === null ? '渲染层 20s 内未就绪（可能白屏 / 脚本报错）' : `渲染层状态为 ${domStatus}`);
+    // 假上游起不来时压根过不了登录页，那条失败已经报过了，别再报一条"20s 未就绪"误导方向。
+    if (domStatus !== 'ready' && fake !== null) {
+      failures.push(
+        domStatus === null ? '渲染层 20s 内未就绪（可能白屏 / 脚本报错）' : `渲染层状态为 ${domStatus}`,
+      );
     }
   } catch (err) {
     failures.push(`加载阶段异常：${String(err)}`);
@@ -841,6 +944,9 @@ export async function runSelfCheck(
     )) as SelfCheckProbe;
 
     if (!probe.hasBridge) failures.push('window.bridge 未挂载 —— preload 没生效或 sandbox 下 ESM/CJS 格式不对');
+    if (probe.bootUpstreamScripted !== true) {
+      failures.push('配置通道切不回脚本上游 —— 下面这批不依赖凭据的探针全部不可信');
+    }
     if (!probe.systemInfoOk) failures.push('system:info 正向探针失败');
     if (!probe.sessionListOk) failures.push('session:list 正向探针失败');
     if (!probe.errorPathThrew) failures.push('session:delete 删除不存在的会话竟未抛错 —— 错误路径失效');
@@ -944,6 +1050,9 @@ export async function runSelfCheck(
           '渲染层可能只设置了 activeWsId 却没请求目录内容',
       );
     }
+    if (probe.uiAbilityTab !== true) {
+      failures.push('切不到「应用能力」页签 —— 文件树与更新卡片的 DOM 断言全部不可信');
+    }
     if (probe.uiEmptyNotice === true) {
       failures.push('界面显示了「（空目录）」，但夹具里明明有文件 —— 把"没加载"画成了"空"');
     }
@@ -1026,6 +1135,20 @@ export async function runSelfCheck(
     }
     if (probe.navUpstreamRestored !== true) {
       failures.push('自检收尾没有把上游还原成脚本上游 —— 后续 run 会打到一个已关闭的假服务器');
+    }
+    if (probe.uiChatTab !== true) {
+      failures.push('切不回「简历问答」页签 —— 五个流式场景的 DOM 断言全部不可信');
+    }
+    // 会话持久化唯一对用户可见的出口：落库的正文要能读回来画出来。
+    // 只断言"库里有行"是不够的 —— 那正是"写进了一个没人读的地方"也能通过的写法。
+    if (probe.uiHistory?.sessionClicked !== true) {
+      failures.push('能力页里找不到自检建的会话 —— 会话列表没跟上广播（多窗口 / 跨进程一致性）');
+    }
+    if (probe.uiHistory?.hasUserEcho !== true) {
+      failures.push('聊天区没有渲染出用户那句 —— 历史消息没从库里读回来');
+    }
+    if (probe.uiHistory?.hasAnswer !== true) {
+      failures.push('聊天区没有渲染出助手正文 —— 落库的正文与读回来的不一致');
     }
 
     /**

@@ -110,19 +110,6 @@ function check(what, cond, detail) {
   }
 }
 
-/**
- * 依赖"配置通道真的生效"的断言。
- * 上游被硬编码时这些断言会**碰巧通过**（写死就是 navigate、BASE 就是那个端口），
- * 那比失败更危险 —— 所以跳过而不是让它绿。
- */
-function checkConfig(what, cond, detail) {
-  if (globalThis.__configChannelLive === true) check(what, cond, detail);
-  else {
-    skipped.push(what);
-    console.log(`  ⏭ ${what}（配置通道未生效，跳过）`);
-  }
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -667,12 +654,13 @@ if (!listeningOnHardcoded) {
   const settingsFile = join(userData, 'navigate-settings.json');
 
   const initial = navigateStatus();
-  // 初始态本身就能判定配置通道是否生效：生效则没有上游 → scripted
-  globalThis.__configChannelLive = initial.upstream.kind === 'scripted';
-  if (!globalThis.__configChannelLive) {
-    console.log('  ⚠️ 配置通道未生效（上游被硬编码）—— 相关断言跳过，见 main/navigate/session.ts');
-  }
-  checkConfig('初始：没有配上游 → scripted', initial.upstream.kind === 'scripted' && initial.upstream.baseUrl === null);
+  // 上游地址是**固定**的（配置入口已砍，见 main/navigate/session.ts）：
+  // 初始态就该指向那个固定地址，而不是"没有上游 → 脚本上游"。
+  check(
+    '初始：上游指向固定地址（不是脚本上游，也不是空的）',
+    initial.upstream.kind === 'navigate' && initial.upstream.baseUrl === BASE,
+    JSON.stringify(initial.upstream),
+  );
   check('初始：没有凭据', initial.login.hasToken === false);
   check('初始：盘上没有凭据文件', initial.login.persisted === false && existsSync(tokenFile) === false);
 
@@ -684,13 +672,19 @@ if (!listeningOnHardcoded) {
     badAddr = err;
   }
   check('非法地址 → BAD_REQUEST', badAddr?.code === 'BAD_REQUEST', `${String(badAddr?.code)} ${String(badAddr?.message)}`);
-  checkConfig('非法地址**没有**写盘', navigateStatus().upstream.kind === 'scripted');
+  check(
+    '非法地址不改变当前上游（校验失败就该原地不动）',
+    navigateStatus().upstream.baseUrl === BASE,
+    String(navigateStatus().upstream.baseUrl),
+  );
   check('非法地址没有留下配置文件', existsSync(settingsFile) === false);
 
   const saved = setUpstreamUrl(`${BASE}/`);
-  checkConfig('合法地址写入后 status 立刻是 navigate', saved.upstream.kind === 'navigate');
-  checkConfig('尾斜杠在落盘前就被去掉了（拼路径时不会再出 //api）', saved.upstream.baseUrl === BASE, String(saved.upstream.baseUrl));
-  checkConfig('地址真的落盘了（重启不用重填）', existsSync(settingsFile) === true);
+  check('合法地址写入后 status 立刻是 navigate', saved.upstream.kind === 'navigate');
+  check('尾斜杠在落盘前就被去掉了（拼路径时不会再出 //api）', saved.upstream.baseUrl === BASE, String(saved.upstream.baseUrl));
+  // 切换是**进程内**的：自检把上游指到随机端口的假服务器上，这份临时地址
+  // 绝不能写进用户配置 —— 否则下次启动会去连一个早被关掉的端口。
+  check('地址不落盘（进程内切换，用完即弃）', existsSync(settingsFile) === false);
 
   up.mode = 'ok';
   const result = await loginAsGuest();
@@ -726,7 +720,11 @@ if (!listeningOnHardcoded) {
   const fresh = await import(`${pathToFileURL(OUT_FILE).href}?fresh=1`);
   check('重启后仍认得这份凭据（真的持久化，不是只在内存里）', fresh.navigateTokenStore.get() === secret);
   check('重启后角色/到期时间也还在', fresh.navigateStatus().login.role === 'guest' && fresh.navigateStatus().login.hasToken === true);
-  checkConfig('重启后上游地址也还在', fresh.navigateStatus().upstream.baseUrl === BASE);
+  check(
+    '重启后上游回到固定地址（上一次的临时覆盖不跨进程）',
+    fresh.navigateStatus().upstream.baseUrl === BASE,
+    String(fresh.navigateStatus().upstream.baseUrl),
+  );
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -810,25 +808,25 @@ console.log('\n── ⑦ 登出（含那条反向断言：上游那边真的吊
   fresh.setUpstreamUrl('http://127.0.0.1:1');
   const offline = await fresh.logout();
   check('上游不可达时登出：本机仍然清干净（用户的诉求不能被网络挡住）', offline.login.hasToken === false);
-  checkConfig('上游不可达时登出：note **如实**说"未确认吊销"', offline.login.note.includes('未确认吊销'), offline.login.note);
-  checkConfig('上游不可达时登出：旧 token 在上游仍然有效（如实暴露，不谎报）', (await upstreamAccepts(token2)) === 200);
+  check('上游不可达时登出：note **如实**说"未确认吊销"', offline.login.note.includes('未确认吊销'), offline.login.note);
+  check('上游不可达时登出：旧 token 在上游仍然有效（如实暴露，不谎报）', (await upstreamAccepts(token2)) === 200);
 
   // 没有配置上游：不该出现"未确认吊销"这种看着吓人的话
   fresh.setUpstreamUrl(null);
   const noUpstream = fresh.navigateStatus();
-  checkConfig('清空地址后 → 回到 scripted（离线可跑）', noUpstream.upstream.kind === 'scripted');
+  // 显式清空 = 明确要"没有上游"（脚本上游），与"没被覆盖"是两件事：
+  // 后者走固定地址，前者是自检要的那条离线路径。
+  check(
+    '显式清空 → 回到脚本上游（离线可跑）',
+    noUpstream.upstream.kind === 'scripted' && noUpstream.upstream.baseUrl === null,
+    JSON.stringify(noUpstream.upstream),
+  );
   const noUp = await fresh.logout();
-  checkConfig('没有上游时登出：note 不出现"未确认吊销"', noUp.login.note.includes('未确认吊销') === false, noUp.login.note);
+  check('能连上上游时登出：note 不出现"未确认吊销"', noUp.login.note.includes('未确认吊销') === false, noUp.login.note);
 
-  // 没有上游就登录 → 必须拒绝，不许悄悄用脚本上游
-  let noUpLogin = null;
-  try {
-    await fresh.loginAsGuest();
-  } catch (err) {
-    noUpLogin = err;
-  }
-  checkConfig('🔴 没配上游就点登录 → BAD_REQUEST（不悄悄退回脚本上游）', noUpLogin?.code === 'BAD_REQUEST', String(noUpLogin?.code));
-  checkConfig('拒绝时给出可操作的说明', noUpLogin?.message.includes('http') === true, noUpLogin?.message);
+  // "没配上游就点登录 → BAD_REQUEST"这一组随配置入口一起消失了：
+  // 上游现在是固定地址，不存在"还没配"的状态。留着就等于断言一个不存在的分支。
+  // 登录必然带上游这件事改由 ⑤ 的"合法地址写入后立刻生效"覆盖。
 }
 
 // ═════════════════════════════════════════════════════════════

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, globalShortcut } from 'electron';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, setRuntimeConfig } from './runtimeConfig.js';
 import {
@@ -13,7 +14,7 @@ import { activeUpstream, flushAllRuns, stopAllRuns } from './agentRuntime.js';
 import { startDevServer } from './devServer.js';
 import { prepareScopeFixture, runSelfCheck } from './selfcheck.js';
 import { closeSessionRepo, configureSessionDb, ensureSessionRepo } from './sessionDb/index.js';
-import { currentAccountKey } from './navigate/session.js';
+import { currentAccountKey, overrideBaseUrl } from './navigate/session.js';
 import { runUpdateFeedProbe } from './updateProbe.js';
 import { scheduleStartupUpdateCheck } from './updater.js';
 
@@ -39,9 +40,29 @@ const makeId = (prefix: string): string =>
 const config = parseArgs(process.argv);
 setRuntimeConfig(config);
 
+// 自检环境里既没有 navigate 服务器也没有凭据：先把上游置成脚本上游，
+// 让不依赖凭据的探针跑得起来；登录与假 SSE 场景由自检自己切。
+if (config.selfcheck) overrideBaseUrl(null);
+
 // 用户数据目录默认取 package.name，会得到 `@crossdeck/shell-electron` 这种带 scope 的怪路径。
 // 显式命名一次，缓存/日志/单实例锁的位置都是可预期的（且方便清理）。
 app.setName('crossdeck');
+
+// 自检的凭据、设置、会话库一律关进 dist/selfcheck —— 否则会写到开发机**真实**的
+// userData 里：① 留下一份体验账号凭据；② 下一轮自检读到上一轮留下的 token，
+// 于是"有没有登录"这件事每跑一次都不一样。
+// 每轮先清空：不清的话上一轮那次登录会被下一轮当成"用户已经登录"，
+// 登录闸门这条断言从此永远走不到。
+// 必须在 app ready 之前设置：handler 与 tokenStore 都在 ready 之后才解析路径。
+if (config.selfcheck) {
+  const selfcheckUserData = join(__dirname, '..', '..', 'dist', 'selfcheck', 'userData');
+  try {
+    rmSync(selfcheckUserData, { recursive: true, force: true });
+  } catch (err) {
+    console.warn('[crossdeck] 自检 userData 没清干净：', err);
+  }
+  app.setPath('userData', selfcheckUserData);
+}
 
 // 自检 / 更新探针跑在 CI / 无头 / 受限环境里，那里 GPU 进程经常直接崩：
 //   GPU process exited unexpectedly → FATAL: GPU process isn't usable. Goodbye.（退出码 3）
@@ -97,11 +118,18 @@ app.whenReady().then(async () => {
 
     // 会话库要在注册 handler **之前**打开：迁移失败就不该起窗口，
     // 否则用户点开第一个会话才会看到「库版本不兼容」。
-    // 自检用独立目录 —— 写进用户真实 userData 会让假会话永久留在列表里。
+    // 自检用独立目录 —— 写进用户真实 userData 会让假会话永久留在列表里；
+    // 每轮再清一次，否则会话数会一轮轮涨上去，报告里的数字失去可比性。
+    const sessionDir = join(PKG_ROOT, 'dist', 'selfcheck', 'sessions');
+    if (config.selfcheck) {
+      try {
+        rmSync(sessionDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn('[crossdeck] 自检会话库没清干净：', err);
+      }
+    }
     configureSessionDb({
-      dir: config.selfcheck
-        ? join(PKG_ROOT, 'dist', 'selfcheck', 'sessions')
-        : join(app.getPath('userData'), 'sessions'),
+      dir: config.selfcheck ? sessionDir : join(app.getPath('userData'), 'sessions'),
       deps: { now: () => Date.now(), newId: makeId },
     });
     const repo = ensureSessionRepo(currentAccountKey());
