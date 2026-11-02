@@ -22,6 +22,7 @@ export * from './session/store.js';
 export * from './session/dbEntity.js';
 export * from './session/dbSql.js';
 export * from './session/assembler.js';
+export * from './session/writeScheduler.js';
 export * from './fs/posixPath.js';
 export * from './fs/workspaceStore.js';
 export * from './fs/pathGuard.js';
