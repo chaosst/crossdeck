@@ -12,6 +12,7 @@ import {
 } from './fakeNavigateUpstream.js';
 import type { FakeNavigateUpstream } from './fakeNavigateUpstream.js';
 import { resetPerfForSelfCheck } from './perf.js';
+import { setSessionBroadcastScopeForSelfCheck } from './sessionEvents.js';
 import { setUpstreamUrl } from './navigate/session.js';
 import { runtimeConfig } from './runtimeConfig.js';
 import { currentUpdateStatus, resetUpdateStateForSelfCheck } from './updater.js';
@@ -261,6 +262,29 @@ export interface SelfCheckProbe {
   domText: string;
 }
 
+/**
+ * 多窗口一致性的证据（T7）。
+ *
+ * 三步缺一不可：
+ *   ① A 建的会话，B 也看得见 —— 证明广播真的到了另一个窗口；
+ *   ② 只推 A 时 B **看不见** —— 反向，证明 ① 有鉴别力（不然"推给所有窗口"
+ *      与"只推发起者"这两份实现都能让 ① 变绿）；
+ *   ③ 恢复全量后 B 重新看得见 —— 证明 ② 的原因是"没推到"，而不是 B 已经死了。
+ */
+export interface SelfCheckMultiWindow {
+  opened: boolean;
+  childReady: boolean;
+  /** ① B 看到了 A 新建的会话 */
+  childSawFirst: boolean;
+  /** ② 收窄广播后 B **没有**看到（true = 符合预期） */
+  childMissedNarrowed: boolean;
+  /** ③ 恢复广播后 B 又看到了 */
+  childSawRestored: boolean;
+  /** 关掉 B 之后 A 侧照常能建会话 —— 广播里跳过已关闭窗口，不得因此中断 */
+  afterCloseCreateOk: boolean;
+  error: string | null;
+}
+
 /** 一个假上游场景在渲染层观察到的结果。 */
 export interface SelfCheckNavScenario {
   /** 订阅到的完整事件序列（类型名） */
@@ -306,6 +330,8 @@ export interface SelfCheckReport {
     outsideFile: string;
   };
   probe: SelfCheckProbe;
+  /** 多窗口一致性（T7）：正向 / 反向 / 复广播 三步。 */
+  multiWindow: SelfCheckMultiWindow | null;
   /**
    * Agent 内核的自查计数 —— 两个都应当恒为 0。
    *
@@ -964,6 +990,115 @@ async function waitForReady(win: BrowserWindow, timeoutMs: number): Promise<stri
   return null;
 }
 
+/**
+ * 多窗口一致性（T7）—— 正向 / 反向 / 复广播 三步。
+ *
+ * 为什么要拿到 main 侧来做：判据横跨两个渲染进程，"推给谁"是 main 的决定，
+ * 而"看不看得见"只有各自的 DOM 知道 —— 只在一边观察什么也证明不了。
+ */
+async function runMultiWindowCheck(
+  mainWin: BrowserWindow,
+): Promise<SelfCheckMultiWindow> {
+  const out: SelfCheckMultiWindow = {
+    opened: false,
+    childReady: false,
+    childSawFirst: false,
+    childMissedNarrowed: false,
+    childSawRestored: false,
+    afterCloseCreateOk: false,
+    error: null,
+  };
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  let child: BrowserWindow | null = null;
+
+  const createSessionFrom = async (title: string): Promise<boolean> =>
+    (await mainWin.webContents.executeJavaScript(
+      `window.bridge.invoke('session:create', { title: ${JSON.stringify(title)} }).then(() => true, () => false)`,
+    )) as boolean;
+
+  const childSees = async (title: string): Promise<boolean> =>
+    (await child!.webContents.executeJavaScript(
+      `(document.body.innerText || '').indexOf(${JSON.stringify(title)}) >= 0`,
+    )) as boolean;
+
+  const waitUntilSeen = async (title: string, ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (await childSees(title)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+
+  try {
+    // 走真实通道开窗（不是 main 内部直接 createWindow）：通道本身也在被验
+    const opened = (await mainWin.webContents.executeJavaScript(
+      `window.bridge.invoke('window:open', { kind: 'main' })`,
+    )) as { windowId: number };
+    child = BrowserWindow.fromId(opened.windowId);
+    if (child === null) throw new Error('window:open 返回的 windowId 找不到对应窗口');
+    out.opened = true;
+
+    // B 走的是同一条启动链路（preload → main → core），等它自己置 ready
+    const bootDeadline = Date.now() + 20_000;
+    while (Date.now() < bootDeadline) {
+      if (child.isDestroyed()) throw new Error('B 窗口在就绪前被销毁');
+      const state = (await child.webContents.executeJavaScript(
+        `(() => { const el = document.querySelector('[data-testid="boot-status"]'); return el ? el.getAttribute('data-state') : null })()`,
+      )) as string | null;
+      if (state === 'ready') {
+        out.childReady = true;
+        break;
+      }
+      await sleep(200);
+    }
+
+    // 会话列表在「应用能力」页签里 —— 不切页签它压根不在 DOM 里
+    await child.webContents.executeJavaScript(
+      `(() => { const b = document.querySelector('[data-testid="tab-ability"]'); if (b) b.click(); return b !== null })()`,
+    );
+    await sleep(400);
+
+    // ① 正向：A 建的会话，B 也看得见
+    const first = 'selfcheck-broadcast-visible';
+    if (!(await createSessionFrom(first))) throw new Error('A 侧 session:create 失败');
+    out.childSawFirst = await waitUntilSeen(first, 4000);
+
+    // 等 B 上一轮的重拉落地，否则它可能"顺手"把下面那条也捡走 —— 反向就假通过了
+    await sleep(400);
+
+    // ② 反向：只推 A，B 必须看不见
+    setSessionBroadcastScopeForSelfCheck(mainWin.webContents.id);
+    const narrowed = 'selfcheck-broadcast-narrowed';
+    if (!(await createSessionFrom(narrowed))) throw new Error('收窄广播时 A 侧 session:create 失败');
+    // 等够久：正常路径 200ms 内就到，给 1500ms 是为了让"其实会到"也能暴露出来
+    out.childMissedNarrowed = !(await waitUntilSeen(narrowed, 1500));
+
+    // ③ 恢复全量：B 重新看得见 —— 这条把 ② 的结论钉死成"没推到"而不是"B 死了"
+    setSessionBroadcastScopeForSelfCheck(null);
+    const restored = 'selfcheck-broadcast-restored';
+    if (!(await createSessionFrom(restored))) throw new Error('恢复广播后 A 侧 session:create 失败');
+    out.childSawRestored = await waitUntilSeen(restored, 4000);
+  } catch (err) {
+    out.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    setSessionBroadcastScopeForSelfCheck(null);
+    if (child !== null && !child.isDestroyed()) {
+      child.destroy();
+      await sleep(300);
+    }
+  }
+
+  // 关掉的窗口必须被跳过，而不是让广播抛错 / 让 run 中断
+  try {
+    out.afterCloseCreateOk = await createSessionFrom('selfcheck-broadcast-after-close');
+  } catch {
+    out.afterCloseCreateOk = false;
+  }
+
+  return out;
+}
+
 /** 登录页上「获取体验账号」就地点击后，等主界面出现（或登录报错）为止。 */
 async function driveGuestLogin(win: BrowserWindow): Promise<{ ok: boolean; reason: string | null }> {
   const clicked = (await win.webContents.executeJavaScript(
@@ -1428,6 +1563,39 @@ export async function runSelfCheck(
     failures.push(`探针执行失败：${String(err)}`);
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // T7：多窗口一致性 —— 正向 / 反向 / 复广播
+  //
+  // 单窗口下"推给所有窗口"与"只推发起者"看不出差别，所以必须在 main 侧
+  // 开第二个真窗口，并且能把广播收窄。三条断言互为前提，缺一条就退化成
+  // "看起来对"（详见 runMultiWindowCheck 的注释）。
+  // ─────────────────────────────────────────────────────────────
+  let multiWindow: SelfCheckMultiWindow | null = null;
+  try {
+    multiWindow = await runMultiWindowCheck(win);
+    if (multiWindow.error !== null) failures.push(`多窗口探针失败：${multiWindow.error}`);
+    if (!multiWindow.opened) failures.push('window:open 没能开出第二个窗口 —— 多窗口一致性无从验证');
+    if (!multiWindow.childReady) failures.push('第二个窗口 20s 内未就绪');
+    if (!multiWindow.childSawFirst) {
+      failures.push('A 新建的会话在 B 的列表里看不到 —— 广播没到另一个窗口');
+    }
+    if (!multiWindow.childMissedNarrowed) {
+      failures.push(
+        '收窄成"只推 A"之后 B 仍然看到了变更 —— 说明"推给所有窗口"这条断言没有鉴别力',
+      );
+    }
+    if (!multiWindow.childSawRestored) {
+      failures.push(
+        '恢复全量广播后 B 仍然看不到 —— 上一轮那个"看不到"可能是 B 已经死了，反向结论不成立',
+      );
+    }
+    if (!multiWindow.afterCloseCreateOk) {
+      failures.push('关掉 B 之后 A 侧建会话失败 —— 广播没有跳过已关闭的窗口');
+    }
+  } catch (err) {
+    failures.push(`多窗口探针执行失败：${String(err)}`);
+  }
+
   // 假上游收尾。关不掉不算失败（它只是个夹具），但必须被看见。
   if (fake !== null) {
     try {
@@ -1552,6 +1720,7 @@ export async function runSelfCheck(
       outsideFile: fixture.outsideFile,
     },
     probe: probe ?? ({} as SelfCheckProbe),
+    multiWindow,
     agentRuntime: {
       droppedAfterTerminal: dropped,
       undeliveredTerminal: undelivered,
