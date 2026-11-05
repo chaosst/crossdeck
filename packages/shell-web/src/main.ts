@@ -13,6 +13,7 @@ import {
 import { createWebNavigateClient } from './navigate/client.js';
 import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts } from './ports.js';
+import { IdbSessionRepository } from './session/idbRepository.js';
 import { runWebSelfCheck } from './selfcheck.js';
 
 /**
@@ -287,6 +288,139 @@ function summarize(types: string[]): string {
     }
   }
   return parts.join(' → ');
+}
+
+// ─────────────────────────────────────────────────────────────
+// ③ 会话持久化 —— 同一套语义的第二个后端（IndexedDB）
+//
+// 语义（发号、幂等、连带删除、一次取全）由 core 的 `SessionRepository`
+// 端口定义，这里只是**换了个存储**：浏览器没有 SQLite，但有事务型对象库。
+// ─────────────────────────────────────────────────────────────
+const DEMO_USER_TEXT = 'Web 壳写入的问题';
+const DEMO_ANSWER_TEXT = '来自 IndexedDB 的回答';
+{
+  const out = h('pre', { 'data-testid': 'web-sessions' }, '(尚未读取)');
+  const status = h('div', { class: 'hint', 'data-testid': 'web-session-status' }, '库：—');
+
+  const repo = new IdbSessionRepository({
+    accountKey: 'web-demo',
+    now: () => Date.now(),
+    newId: (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`,
+  });
+
+  const createBtn = h('button', { 'data-testid': 'web-session-create' }, '新建会话') as HTMLButtonElement;
+  const writeBtn = h('button', { 'data-testid': 'web-session-write' }, '写入一问一答') as HTMLButtonElement;
+  const reloadBtn = h('button', { 'data-testid': 'web-session-reload' }, '读回') as HTMLButtonElement;
+  const dropBtn = h('button', { 'data-testid': 'web-session-drop' }, '删掉最新一个') as HTMLButtonElement;
+  const wipeBtn = h('button', { 'data-testid': 'web-session-wipe' }, '清空本账号的库') as HTMLButtonElement;
+
+  let currentId: string | null = null;
+
+  async function render(prefix: string): Promise<void> {
+    const list = await repo.listSessions();
+    const lines: string[] = [`${prefix} 会话 ${list.length} 个`];
+    for (const meta of list) {
+      const mark = meta.id === currentId ? '▶' : ' ';
+      lines.push(`  ${mark} ${meta.title} ｜ ${meta.messageCount} 条消息 ｜ ${new Date(meta.updatedAt).toLocaleTimeString()}`);
+      if (meta.id !== currentId) continue;
+      // 只展开当前会话：一次取全接口本来就能一次拿完，这里是为了屏幕别太长
+      for (const message of await repo.listMessages(meta.id)) {
+        const tag = message.role === 'user' ? '问' : '答';
+        const events = message.events.length > 0 ? `（${message.events.map((e) => e.kind).join('+')}）` : '';
+        lines.push(`      ${tag} #${message.seq} ${message.content}${events}`);
+      }
+    }
+    out.textContent = lines.join('\n');
+    status.textContent = `库：${await repo.databaseName()} ｜ 账号 web-demo ｜ 当前 ${currentId === null ? '（未选）' : currentId}`;
+  }
+
+  createBtn.addEventListener('click', () => {
+    void (async () => {
+      const created = await repo.createSession(`演示会话 ${new Date().toLocaleTimeString()}`);
+      currentId = created.id;
+      await render('已新建');
+    })();
+  });
+
+  writeBtn.addEventListener('click', () => {
+    void (async () => {
+      if (currentId === null) {
+        out.textContent = '先新建一个会话';
+        return;
+      }
+      await repo.insertMessage({
+        sessionId: currentId,
+        role: 'user',
+        content: DEMO_USER_TEXT,
+        status: 'done',
+        runId: null,
+      });
+      const answer = await repo.insertMessage({
+        sessionId: currentId,
+        role: 'assistant',
+        content: '',
+        status: 'streaming',
+        runId: null,
+      });
+      // 与主进程那条写入路径同一套形状：先流式覆盖写，终态那一拍补事件
+      await repo.flushMessage({
+        messageId: answer.messageId,
+        content: DEMO_ANSWER_TEXT,
+        status: 'done',
+        usage: { promptTokens: 4, completionTokens: 9, totalMs: 120, mergedChunks: 3 },
+        error: null,
+        events: [
+          {
+            kind: 'action',
+            eventId: `ev_${Math.random().toString(36).slice(2, 10)}`,
+            messageId: answer.messageId,
+            seq: 1,
+            createdAt: Date.now(),
+            actionId: 'a1',
+            label: '查看简历原文',
+            url: 'http://127.0.0.1:3001/resume',
+          },
+        ],
+        terminal: true,
+      });
+      await render('已写入');
+    })();
+  });
+
+  reloadBtn.addEventListener('click', () => {
+    void render('已读回');
+  });
+
+  dropBtn.addEventListener('click', () => {
+    void (async () => {
+      if (currentId === null) return;
+      await repo.deleteSession(currentId);
+      currentId = null;
+      await render('已删除');
+    })();
+  });
+
+  wipeBtn.addEventListener('click', () => {
+    void (async () => {
+      await repo.destroy();
+      currentId = null;
+      await render('已清空');
+    })();
+  });
+
+  void render('初始');
+
+  root.append(
+    card(
+      '会话持久化（IndexedDB —— 同一套语义的第二个后端）',
+      '发号、事件幂等、删会话连带清孤儿、一次取全 —— 这些不变式写在 core 的 SessionRepository 端口里，' +
+        'Electron 壳用 SQLite 实现、这里用 IndexedDB 实现，两边跑**同一份**可执行规格。' +
+        '换成对象库之后，行编码层（usage/payload 的 JSON 文本）整层消失了：结构化克隆直接存对象。',
+      h('div', { class: 'row' }, createBtn, writeBtn, reloadBtn, dropBtn, wipeBtn),
+      out,
+      status,
+    ),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

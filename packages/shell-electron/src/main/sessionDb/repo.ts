@@ -1,8 +1,11 @@
 /**
- * 会话库的三张表读写。
+ * 会话库的三张表读写 —— **SQLite 后端**。
  *
  * 只认注入进来的 db —— 不碰 electron、不碰文件系统，因此可在裸 Node 里用真库断言。
  * 所有写操作走 `BEGIN IMMEDIATE`：取号与插入必须原子，唯一索引是最后一道闸。
+ *
+ * 输入类型与端口都来自 core：同一套语义在 Web 壳有一份 IndexedDB 实现，
+ * 候选实现必须过同一份可执行规格（`checkSessionRepository`）。
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -16,33 +19,13 @@ import type {
   SessionMeta,
   Usage,
 } from '@crossdeck/contract';
+import type { FlushMessageInput, InsertMessageInput, SessionRepository } from '@crossdeck/core';
+
+export type { FlushMessageInput, InsertMessageInput };
 
 export interface RepoDeps {
   readonly now: () => number;
   readonly newId: (prefix: string) => string;
-}
-
-export interface InsertMessageInput {
-  readonly sessionId: string;
-  readonly role: MessageRole;
-  readonly content: string;
-  readonly status: MessageStatus;
-  readonly runId: string | null;
-  readonly usage?: Usage | null;
-}
-
-export interface FlushMessageInput {
-  readonly messageId: string;
-  readonly content: string;
-  readonly status: MessageStatus;
-  readonly usage: Usage | null;
-  readonly error: string | null;
-  /** 上次写入之后新产生的事件；重放不会有副作用。 */
-  readonly events: readonly SessionEvent[];
-  /** 进了终态：同时把会话的 updatedAt 推到最新。 */
-  readonly terminal: boolean;
-  /** 这一轮 run 的 id。首个 flush 时补上（调 run 时还不知道 runId）。 */
-  readonly runId?: string | null;
 }
 
 interface SessionRowShape {
@@ -166,7 +149,11 @@ function decodeEvent(row: EventRowShape): SessionEvent | null {
   return null;
 }
 
-export class SessionRepo {
+/**
+ * SQLite 后端。同步方法正好满足端口（`Awaitable<T>` 允许直接返回值）——
+ * 不需要把那几个同步调用包成 `async`，那会假装存在一个异步点。
+ */
+export class SessionRepo implements SessionRepository {
   readonly #db: DatabaseSync;
   readonly #deps: RepoDeps;
 

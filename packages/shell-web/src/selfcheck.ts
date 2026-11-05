@@ -33,12 +33,14 @@ import {
   TOOL_SCENARIO_MARKER,
   ToolRegistry,
   WorkspaceStore,
+  checkSessionRepository,
   createPathGuard,
   echoTool,
   resolveInWorkspace,
 } from '@crossdeck/core';
-import type { AgentDeps, NavigateDiagnostic } from '@crossdeck/core';
+import type { AgentDeps, NavigateDiagnostic, SessionRepositoryHarness } from '@crossdeck/core';
 import { createWebNavigateClient } from './navigate/client.js';
+import { IdbSessionRepository, deleteSessionDatabase } from './session/idbRepository.js';
 import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts, detectCapabilities } from './ports.js';
 
@@ -65,6 +67,9 @@ interface RunTrace {
 }
 
 const RUN_TIMEOUT_MS = 8000;
+
+/** 与 main.ts 里演示卡片写入的正文一致 —— 界面接没接上就看它出现在不在。 */
+const DEMO_ANSWER_TEXT = '来自 IndexedDB 的回答';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -810,6 +815,84 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
   }
 
   // ───────────────────────────────────────────────────────────
+  // ⑥ 仓储端口：**同一份**用例，换一个后端再跑一遍
+  //
+  //    这不是"再测一遍 IndexedDB 好不好用"。用例本体住在 core 里
+  //    （`checkSessionRepository`），Electron 壳在 Node 里拿它跑真 SQLite，
+  //    这里拿它跑真 IndexedDB —— 两边通过的集合一致，"同一套语义"才成立。
+  //    如果哪天两个实现漂了，只有一边会红，而且是**同一条用例名**，
+  //    不用去比两套各自的断言。
+  // ───────────────────────────────────────────────────────────
+  try {
+    let clock = 1_700_000_000_000;
+    let idSeq = 0;
+    let caseSeq = 0;
+    const created: IdbSessionRepository[] = [];
+
+    const newRepo = (accountKey: string): IdbSessionRepository =>
+      new IdbSessionRepository({
+        accountKey,
+        now: () => clock,
+        // id 前缀与两个 SQL 实现同构：s_ / m_ / ev_
+        newId: (prefix) => `${prefix}_${(idSeq += 1)}`,
+      });
+
+    const harness: SessionRepositoryHarness = {
+      label: 'indexeddb',
+      async create() {
+        caseSeq += 1;
+        const repo = newRepo(`selfcheck-case-${caseSeq}`);
+        // 上一轮自检可能留下同名库（进程被强杀时 destroy 跑不到）——
+        // 先删一次，保证"空库"这个前提是真的
+        await repo.destroy();
+        created.push(repo);
+        return repo;
+      },
+      advance(ms) {
+        clock += ms;
+      },
+      async reopen() {
+        const repo = newRepo(`selfcheck-case-${caseSeq}`);
+        created.push(repo);
+        return repo;
+      },
+      async dispose() {
+        // 同一个库可能有两条连接：先全部关掉，再删一次，否则删不掉
+        const names = new Set<string>();
+        for (const repo of created) {
+          names.add(await repo.databaseName());
+          await repo.close();
+        }
+        for (const name of names) {
+          try {
+            await deleteSessionDatabase(name);
+          } catch {
+            // 删不掉不该改变判定：浏览器下次打开会碰到旧数据，
+            // 但用例已经跑完了，而 create() 里还有一次 destroy 兜底
+          }
+        }
+        created.length = 0;
+      },
+    };
+
+    const result = await checkSessionRepository(harness);
+    probe.sessionRepo = {
+      total: result.total,
+      passed: result.passed,
+      skipped: result.skipped,
+      failures: result.failures,
+    };
+    check('sessionRepo.allCasesPassed', result.failures.length === 0, `${result.passed}/${result.total}`);
+    // 用例被删空也会"全绿" —— 这条钉住规格本身还在
+    check('sessionRepo.specIsNotEmpty', result.total >= 15, result.total);
+    // 持久化那条只有 harness 提供 reopen 才会跑；跳过等于少验一整块
+    check('sessionRepo.persistenceCaseRan', result.skipped.length === 0, result.skipped.join(',') || '无跳过');
+    for (const f of result.failures) failures.push(`仓储用例未通过：${f}`);
+  } catch (err) {
+    check('sessionRepo.allCasesPassed', false, err instanceof Error ? err.message : String(err));
+  }
+
+  // ───────────────────────────────────────────────────────────
   // ⑤ 驱动一次**真实 UI 点击** —— 让"越界被拒"进入归档截图
   //    算法断言再密，也证明不了"界面上看得见"。
   // ───────────────────────────────────────────────────────────
@@ -848,6 +931,29 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
       const denied = await waitFor(() => (errBox.textContent ?? '').includes('SCOPE_DENIED'), 3000);
       probe.uiEscapeMessage = errBox.textContent;
       check('ui.escapeDenialVisible', denied, errBox.textContent);
+
+      // ③ 会话卡片：真点两次。仓储能过用例是一回事，界面上接没接上是另一回事 ——
+      //    和上面「算法断言再密也证明不了界面上看得见」同一个道理。
+      const sessWipe = document.querySelector<HTMLButtonElement>('[data-testid="web-session-wipe"]');
+      const sessCreate = document.querySelector<HTMLButtonElement>('[data-testid="web-session-create"]');
+      const sessWrite = document.querySelector<HTMLButtonElement>('[data-testid="web-session-write"]');
+      const sessOut = document.querySelector<HTMLElement>('[data-testid="web-sessions"]');
+      if (sessWipe === null || sessCreate === null || sessWrite === null || sessOut === null) {
+        check('ui.sessionTargetsPresent', false, '缺少会话卡片的锚点');
+      } else {
+        // 先清空：演示库是持久的，上一轮自检留下的会话会让"1 个"这个前提不成立
+        sessWipe.click();
+        await waitFor(() => (sessOut.textContent ?? '').includes('已清空'), 3000);
+        sessCreate.click();
+        await waitFor(() => (sessOut.textContent ?? '').includes('会话 1 个'), 3000);
+        sessWrite.click();
+        const wrote = await waitFor(
+          () => (sessOut.textContent ?? '').includes(DEMO_ANSWER_TEXT),
+          4000,
+        );
+        probe.uiSessionDump = sessOut.textContent;
+        check('ui.sessionCardWrote', wrote, sessOut.textContent);
+      }
     }
   } catch (err) {
     check('ui.treeRendered', false, err instanceof Error ? err.message : String(err));
@@ -874,6 +980,7 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
       'TOOL_SCENARIO_MARKER',
       'ToolRegistry',
       'WorkspaceStore',
+      'checkSessionRepository',
       'createPathGuard',
       'echoTool',
       'resolveInWorkspace',

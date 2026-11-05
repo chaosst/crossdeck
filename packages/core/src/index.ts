@@ -3,7 +3,7 @@
  *
  * 模块：
  *   ports     平台能力契约
- *   session   SessionStore / schema 与迁移 / 事件装配器 / 节流写入
+ *   session   SessionStore / schema 与迁移 / 事件装配器 / 节流写入 / 仓储端口
  *   fs        WorkspaceStore / PathGuard / resolveInWorkspace
  *   events    StreamBus（事件分发与退订）
  *   agent     AgentRuntime / BackpressurePump / ModelPort / 工具链路
@@ -23,6 +23,8 @@ export * from './session/dbEntity.js';
 export * from './session/dbSql.js';
 export * from './session/assembler.js';
 export * from './session/writeScheduler.js';
+export * from './session/repository.js';
+export * from './session/repositoryConformance.js';
 export * from './fs/posixPath.js';
 export * from './fs/workspaceStore.js';
 export * from './fs/pathGuard.js';
