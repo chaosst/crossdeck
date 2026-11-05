@@ -12,6 +12,7 @@ import {
   startFakeNavigateUpstream,
 } from './fakeNavigateUpstream.js';
 import type { FakeNavigateUpstream } from './fakeNavigateUpstream.js';
+import { setOpenExternalForSelfCheck } from './handlers.js';
 import { resetPerfForSelfCheck } from './perf.js';
 import { setSessionBroadcastScopeForSelfCheck } from './sessionEvents.js';
 import { setUpstreamUrl } from './navigate/session.js';
@@ -245,6 +246,8 @@ export interface SelfCheckProbe {
     hasAnswer: boolean;
     /** 动作卡片（T12）：落库的 action 事件能不能被画成可点的卡片 */
     hasActionCard?: boolean;
+    /** 卡片有没有真的被点下去（点击后主进程那边记录打开地址） */
+    actionClicked?: boolean;
     textLength: number;
   };
   /**
@@ -333,6 +336,8 @@ export interface SelfCheckReport {
     outsideFile: string;
   };
   probe: SelfCheckProbe;
+  /** 动作卡片点开时**被记录下来的**地址（自检里 openExternal 是打桩，不会真弹浏览器）。 */
+  openedUrls: string[];
   /** 多窗口一致性（T7）：正向 / 反向 / 复广播 三步。 */
   multiWindow: SelfCheckMultiWindow | null;
   /**
@@ -924,6 +929,18 @@ function buildProbeScript(
   // 动作卡片：落库的 action 事件必须被画出来（此前这条链路一段都没被跑过）
   out.uiHistory.hasActionCard = chatText.indexOf(${JSON.stringify(FAKE_ACTION_LABEL)}) >= 0;
 
+  // 卡片必须真的点得开：点一下由主进程记录地址（自检里 openExternal 被换成打桩，不弹浏览器）
+  const card = Array.from(document.querySelectorAll('button')).find(
+    (b) => (b.textContent || '').trim() === ${JSON.stringify(FAKE_ACTION_LABEL)},
+  );
+  if (card) {
+    card.click();
+    out.uiHistory.actionClicked = true;
+    await new Promise((r) => setTimeout(r, 400));
+  } else {
+    out.uiHistory.actionClicked = false;
+  }
+
   // 收尾必须还原成脚本上游：不还原的话报告落盘后进程还指着一个即将被关掉的假服务器，
   // 后面任何一次误触发的 run 都会变成一个莫名其妙的连接错误。
   try {
@@ -1148,6 +1165,12 @@ export async function runSelfCheck(
   const failures: string[] = [];
   const warnings: string[] = [];
   let domStatus: string | null = null;
+
+  // 动作卡片点下去会调 shell.openExternal —— 自检绝不能真弹用户的浏览器，换成记录。
+  const openedUrls: string[] = [];
+  setOpenExternalForSelfCheck(async (url) => {
+    openedUrls.push(url);
+  });
 
   // 假 SSE 上游必须在**探针之前**起好 —— 探针的第一件事就是把上游切到它上面。
   // 起不来不算"跳过"：那样五条 navigate 路径一条都没验，报告却会显示 ok，
@@ -1425,6 +1448,16 @@ export async function runSelfCheck(
       failures.push(
         `聊天区没有渲染出动作卡片「${FAKE_ACTION_LABEL}」—— ` +
           '上游 action 帧 → 事件 → 落库 → 卡片这四段里有断的（T12 一直是空档）',
+      );
+    }
+    if (probe.uiHistory?.actionClicked !== true) {
+      failures.push(`动作卡片「${FAKE_ACTION_LABEL}」不是可点的按钮 —— 画出来但点不动`);
+    }
+    // 卡片点开 = 卡片的 url 真的到得了 shell.openExternal —— 半路被 host 白名单拒掉同样是断的
+    if (!openedUrls.some((u) => u.endsWith('/resume'))) {
+      failures.push(
+        `动作卡片点击后没有触发打开原文（实际打开：${JSON.stringify(openedUrls)}）—— ` +
+          '多半是 url 的 host 不在 action:open 的白名单里',
       );
     }
 
@@ -1721,6 +1754,9 @@ export async function runSelfCheck(
     failures.push(`截图失败：${String(err)}`);
   }
 
+  // 打桩只活在这一次自检里
+  setOpenExternalForSelfCheck(null);
+
   const report: SelfCheckReport = {
     ok: failures.length === 0,
     ranAt: new Date().toISOString(),
@@ -1740,6 +1776,7 @@ export async function runSelfCheck(
       outsideFile: fixture.outsideFile,
     },
     probe: probe ?? ({} as SelfCheckProbe),
+    openedUrls,
     multiWindow,
     agentRuntime: {
       droppedAfterTerminal: dropped,

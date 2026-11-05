@@ -194,7 +194,7 @@ export function registerHandlers(): number {
     if (!decision.ok) {
       throw new AppError('FORBIDDEN', describeOpenUrlReason(decision.reason));
     }
-    await shell.openExternal(decision.url);
+    await (openExternalImpl ?? defaultOpenExternal)(decision.url);
   });
 
   // ── Agent 运行 ──────────────────────────────────────────
@@ -392,4 +392,15 @@ export function grantWorkspaceForSelfCheck(root: string): Workspace {
     throw new Error(`自检夹具目录不合法（${granted.reason}）：${root}`);
   }
   return granted.workspace;
+}
+
+/** 「打开外链」的默认实现：交给系统浏览器。 */
+const defaultOpenExternal = (url: string): Promise<void> => shell.openExternal(url);
+
+/** 自检专用替代实现；null = 走默认。进程内，不落盘。 */
+let openExternalImpl: ((url: string) => Promise<void>) | null = null;
+
+/** 自检时把「真开浏览器」换成可观测的替代实现（否则自检会弹出用户的默认浏览器）。 */
+export function setOpenExternalForSelfCheck(fn: ((url: string) => Promise<void>) | null): void {
+  openExternalImpl = fn;
 }

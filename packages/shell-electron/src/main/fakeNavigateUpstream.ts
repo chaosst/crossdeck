@@ -134,7 +134,7 @@ export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream>
     res.flushHeaders();
   };
 
-  const streamScenario = (scenario: FakeScenario, res: ServerResponse): void => {
+  const streamScenario = (scenario: FakeScenario, res: ServerResponse, host: string): void => {
     openSse(res);
     stats.frames[scenario] = 0;
 
@@ -191,14 +191,14 @@ export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream>
           return;
         case 'action':
           // 端侧动作帧：done 之前推，端侧应渲染出一张可点击的卡片。
-          // 这一帧在 navigate 侧还没有实现（见计划 §10），所以由假上游来演 ——
-          // 否则"映射 → 事件 → 落库 → 卡片"这四段没有一段真的被跑过。
+          // url 必须与真上游一致走**同源** —— 端侧 action:open 只放行上游自己的 host，
+          // 这里要是写个 example.com，卡片点下去必然被拒，而自检又看不出差别。
           frame(
             'action',
             JSON.stringify({
               actionId: 'a1',
               label: FAKE_ACTION_LABEL,
-              url: 'https://example.com/wiki/resume',
+              url: `http://${host}/resume`,
             }),
           );
           frame('done', NAVIGATE_DONE_LITERAL);
@@ -284,7 +284,7 @@ export async function startFakeNavigateUpstream(): Promise<FakeNavigateUpstream>
           json(400, { error: `自检假上游不认识这个场景：${question}` });
           return;
         }
-        streamScenario(scenario, res);
+        streamScenario(scenario, res, req.headers.host ?? '127.0.0.1');
         return;
       }
 
