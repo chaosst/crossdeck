@@ -13,6 +13,7 @@ import {
 import { createWebNavigateClient } from './navigate/client.js';
 import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts } from './ports.js';
+import { uploadDocumentViaXhr } from './navigate/upload.js';
 import { IdbSessionRepository } from './session/idbRepository.js';
 import { runWebSelfCheck } from './selfcheck.js';
 
@@ -424,7 +425,83 @@ const DEMO_ANSWER_TEXT = '来自 IndexedDB 的回答';
 }
 
 // ─────────────────────────────────────────────────────────────
-// ③ 工作区 scope —— 与 Electron 壳共用同一个 PathGuard
+// ④ 上传 —— 走 XHR，不是 fetch
+//
+// fetch 没有**上传**进度：它只知道"我写完了"，不知道"对端收了多少"。
+// 要进度条就只剩 `xhr.upload.onprogress`。问答那边要读流，所以还得是 fetch ——
+// 同一个页面上两种传输并存，不是风格不统一，是 API 分工。
+// ─────────────────────────────────────────────────────────────
+{
+  const input = h('input', {
+    type: 'file',
+    accept: '.pdf,.docx,.doc,.md,.txt',
+    'data-testid': 'web-upload-input',
+  }) as HTMLInputElement;
+  const sendBtn = h('button', { 'data-testid': 'web-upload-send' }, '上传到知识库') as HTMLButtonElement;
+  const bar = h('progress', { max: '1', value: '0', style: 'width:220px', 'data-testid': 'web-upload-bar' });
+  const stage = h('div', { class: 'hint', 'data-testid': 'web-upload-stage' }, '未开始');
+  const result = h('div', { 'data-testid': 'web-upload-result' }, '');
+
+  let handle: { cancel(): void } | null = null;
+
+  sendBtn.addEventListener('click', () => {
+    const file = input.files?.[0];
+    if (file === undefined) {
+      stage.textContent = '先选一个文件';
+      return;
+    }
+    sendBtn.disabled = true;
+    result.textContent = '';
+    stage.textContent = '上传中…';
+    const started = uploadDocumentViaXhr({
+      file,
+      onProgress: (p) => {
+        (bar as HTMLProgressElement).value = p.ratio;
+        const rate = p.bytesPerSec === null ? '计算中' : `${Math.round(p.bytesPerSec / 1024)}KB/s`;
+        stage.textContent = `已发送 ${p.sentBytes}/${p.totalBytes} 字节 ｜ ${rate}`;
+      },
+    });
+    handle = started;
+    void started.promise.then((outcome) => {
+      handle = null;
+      sendBtn.disabled = false;
+      if (outcome.ok) {
+        (bar as HTMLProgressElement).value = 1;
+        stage.textContent = `已入库：${outcome.document.filename}（${outcome.document.chunks} 个切片）`;
+        result.textContent = `docId = ${outcome.document.docId}`;
+        return;
+      }
+      stage.textContent = `[${outcome.stage}] ${outcome.message}`;
+      result.textContent = outcome.retryable ? '可以再试一次' : '这一类失败再点一次也一样，先处理原因';
+    });
+  });
+
+  const cancelBtn = h('button', { 'data-testid': 'web-upload-cancel' }, '取消') as HTMLButtonElement;
+  cancelBtn.addEventListener('click', () => {
+    // 真断连（xhr.abort），不是"丢掉回调"—— 后者在上传这条路上等于让字节继续流
+    handle?.cancel();
+    handle = null;
+    sendBtn.disabled = false;
+    stage.textContent = '已取消';
+  });
+
+  root.append(
+    card(
+      '上传（XHR —— 因为 fetch 没有上传进度）',
+      '桌面壳手写 multipart framing（要一边读盘一边发，不能把 20MB 全读进内存）；' +
+        '浏览器里 FormData 会自己拼好，能白拿的就别手写。' +
+        '认证同问答：同源 httpOnly cookie，浏览器自动带上，**不往 URL 塞 token**。' +
+        '体积/后缀的体检在本地做完再发 —— 服务端既没有体积限制也没有类型限制。',
+      h('div', { class: 'row' }, input, sendBtn, cancelBtn),
+      h('div', { class: 'row' }, bar),
+      stage,
+      result,
+    ),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// ⑤ 工作区 scope —— 与 Electron 壳共用同一个 PathGuard
 // ─────────────────────────────────────────────────────────────
 {
   const treeBox = h('ul', { 'data-testid': 'web-tree' });

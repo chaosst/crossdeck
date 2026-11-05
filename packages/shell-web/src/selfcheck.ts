@@ -38,8 +38,14 @@ import {
   echoTool,
   resolveInWorkspace,
 } from '@crossdeck/core';
-import type { AgentDeps, NavigateDiagnostic, SessionRepositoryHarness } from '@crossdeck/core';
+import type {
+  AgentDeps,
+  NavigateDiagnostic,
+  SessionRepositoryHarness,
+  UploadProgress,
+} from '@crossdeck/core';
 import { createWebNavigateClient } from './navigate/client.js';
+import { uploadDocumentViaXhr } from './navigate/upload.js';
 import { IdbSessionRepository, deleteSessionDatabase } from './session/idbRepository.js';
 import { WebNavigateModel } from './navigate/model.js';
 import { createWebPorts, detectCapabilities } from './ports.js';
@@ -562,6 +568,69 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
   }
 
   // ───────────────────────────────────────────────────────────
+  // ③b 上传（XHR）—— 浏览器独有的那一段
+  //
+  //    **必须在登录之前跑**：401 那条反向要求"此刻没有凭据"，
+  //    而 httpOnly cookie 从 JS 里清不掉（这正是 httpOnly 的意义）。
+  //    所以顺序是：本地拦截 → 未登录 401 → 主动登录 → 403。
+  //
+  //    这里不演成功：假上游只回 401/403（与真上游 requireAdminApi 一致），
+  //    200 的解码在 core，由 `scripts/verify-upload-client.mjs` 用真 HTTP 覆盖。
+  //    演一个假的 200 会让人以为成功路径也被验过了。
+  // ───────────────────────────────────────────────────────────
+  try {
+    const uploadStats = async (): Promise<{
+      uploads: string[];
+    }> => {
+      const res = await fetch('/__selfcheck/nav-stats');
+      return (await res.json()) as { uploads: string[] };
+    };
+
+    const before = await uploadStats();
+
+    // ① 后缀不合规：本地就拦，**一个字节都不发**
+    const rejectedExt = await uploadDocumentViaXhr({
+      file: new File([new Uint8Array(16)], 'payload.exe', { type: 'application/octet-stream' }),
+    }).promise;
+    check(
+      'upload.localRejectsBadExtension',
+      rejectedExt.ok === false && rejectedExt.stage === 'rejected-local' && rejectedExt.message.includes('只接受'),
+      rejectedExt,
+    );
+
+    // ② 超限：同样本地拦
+    const rejectedSize = await uploadDocumentViaXhr({
+      file: new File([new Uint8Array(21 * 1024 * 1024)], 'big.txt', { type: 'text/plain' }),
+    }).promise;
+    check(
+      'upload.localRejectsOversize',
+      rejectedSize.ok === false && rejectedSize.stage === 'rejected-local' && rejectedSize.message.includes('超过上限'),
+      rejectedSize,
+    );
+
+    // ③ 上面两次都没发请求 —— 这条才是"体检在壳里做"的证据。
+    //    少了它，①②只是在验一个正则，发没发出去没人知道。
+    const afterLocal = await uploadStats();
+    check(
+      'upload.noRequestWhenRejectedLocally',
+      afterLocal.uploads.length === before.uploads.length,
+      `上游看到了 ${afterLocal.uploads.length - before.uploads.length} 次请求（应为 0）`,
+    );
+
+    // ④ 未登录：401 要翻译成"登录已失效"，不是"上传失败"
+    const unauthorized = await uploadDocumentViaXhr({
+      file: new File([new Uint8Array(16)], 'note.txt', { type: 'text/plain' }),
+    }).promise;
+    check(
+      'upload.unauthorizedWithoutCookie',
+      unauthorized.ok === false && unauthorized.stage === 'http' && unauthorized.message.includes('登录已失效'),
+      unauthorized,
+    );
+  } catch (err) {
+    check('upload.anonymousRan', false, err instanceof Error ? err.message : String(err));
+  }
+
+  // ───────────────────────────────────────────────────────────
   // ④ 真实上游链路 —— 同源假 SSE 上游
   //
   // 与 Electron 壳那一版**刻意只验三件事**（分工见开发计划）：
@@ -890,6 +959,47 @@ export async function runWebSelfCheck(): Promise<WebSelfCheckReport> {
     for (const f of result.failures) failures.push(`仓储用例未通过：${f}`);
   } catch (err) {
     check('sessionRepo.allCasesPassed', false, err instanceof Error ? err.message : String(err));
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // ③c 上传（登录态）—— 403 与进度
+  //
+  //    与 ③b 拆开的原因很实在：nav 那一段要做"未登录必须被拒"的反向断言，
+  //    而 cookie 一旦写进去就清不掉（httpOnly 的意义）。所以"没登录"只能排在
+  //    任何登录之前，"登录了"只能排在之后 —— 一个块拆两半，顺序就是约束本身。
+  // ───────────────────────────────────────────────────────────
+  try {
+    // 自己登一次，不依赖 nav 那段留下的状态（少一条隐式耦合）
+    await fetch('/api/login/guest', { method: 'POST', credentials: 'same-origin' });
+
+    const progressFrames: UploadProgress[] = [];
+    const payload = new Uint8Array(1024 * 1024); // 1MB：太小可能一帧不下就结束了
+    const forbidden = await uploadDocumentViaXhr({
+      file: new File([payload], 'hello.txt', { type: 'text/plain' }),
+      onProgress: (p) => progressFrames.push(p),
+    }).promise;
+    check(
+      'upload.forbiddenForGuest',
+      forbidden.ok === false && forbidden.stage === 'http' && forbidden.message.includes('没有上传权限'),
+      forbidden,
+    );
+
+    // 进度：至少一帧、单调不减、末帧走满（`max(上次,本次)` 夹紧在 core，这里验它真被调用了）
+    const monotonic = progressFrames.every(
+      (p, i) => i === 0 || p.sentBytes >= (progressFrames[i - 1]?.sentBytes ?? 0),
+    );
+    const last = progressFrames[progressFrames.length - 1];
+    check(
+      'upload.progressArrived',
+      progressFrames.length >= 1 && monotonic && last !== undefined && last.sentBytes === payload.byteLength,
+      { frames: progressFrames.length, monotonic, last },
+    );
+
+    // 对端看见了哪个文件 —— 证明 multipart 字段名与 filename 都对
+    const stats = (await (await fetch('/__selfcheck/nav-stats')).json()) as { uploads: string[] };
+    check('upload.filenameReachedUpstream', stats.uploads.includes('hello.txt'), stats.uploads);
+  } catch (err) {
+    check('upload.authenticatedRan', false, err instanceof Error ? err.message : String(err));
   }
 
   // ───────────────────────────────────────────────────────────

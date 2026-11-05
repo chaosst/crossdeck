@@ -99,6 +99,8 @@ function cookieToken(req) {
  */
 export function createFakeNavigateUpstream(opts) {
   const { chatPath, doneLiteral } = opts;
+  // 路径由调用方从 core 注入（与 chatPath 同一个理由：不在这里抄第二份协议常量）
+  const uploadPath = opts.uploadPath ?? '/api/upload';
   const auth = opts.auth ?? 'cookie';
   const loginPath = opts.loginPath ?? '/api/login/guest';
   const fixedToken = opts.fixedToken ?? null;
@@ -106,7 +108,16 @@ export function createFakeNavigateUpstream(opts) {
   const liveTokens = new Set();
   const timers = new Set();
   let seq = 0;
-  const stats = { logins: 0, frames: {}, ended: [], doneSent: [], clientGone: [], unknown: [] };
+  const stats = {
+    logins: 0,
+    frames: {},
+    ended: [],
+    doneSent: [],
+    clientGone: [],
+    unknown: [],
+    /** 上传**尝试**次数（含被闸门拒掉的）。客户端说"我没发"时，这个数才是证据。 */
+    uploads: [],
+  };
 
   if (fixedToken !== null) liveTokens.add(fixedToken);
 
@@ -255,6 +266,25 @@ export function createFakeNavigateUpstream(opts) {
       }
       // 真上游的响应体里本来也回一份 token（Electron 壳就靠它），照抄。
       json(res, 200, { token, role: 'guest', expiresIn: 1800, next: '/' });
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === uploadPath) {
+      // 与真上游同一条闸门顺序：先认凭据（401），再认角色（403）。
+      // 真上游上传走 `requireAdminApi`，体验账号拿不到 —— 所以这里**不演 200**：
+      // 成功路径的解码在 core，由 `scripts/verify-upload-client.mjs` 用真 HTTP
+      // 服务器覆盖。这里要验的是浏览器独有的那一段（XHR 挂载 / 进度 / 状态翻译），
+      // 演一个假的 200 只会让人以为成功路径被验过了。
+      const body = await readBody(req); // 必须吃掉请求体，否则对端会看到连接被重置
+      const presented = auth === 'cookie' ? cookieToken(req) : (url.searchParams.get('token') ?? null);
+      if (presented === null || !liveTokens.has(presented)) {
+        stats.uploads.push('401');
+        json(res, 401, { error: 'unauthorized' });
+        return true;
+      }
+      // 从 multipart 里抠出文件名：只为了断言"发出去的是哪个文件"，不做完整解析
+      const nameMatch = /filename="([^"]*)"/.exec(body);
+      stats.uploads.push(nameMatch === null ? '(no-filename)' : nameMatch[1]);
+      json(res, 403, { error: 'forbidden' });
       return true;
     }
     if (req.method === 'POST' && url.pathname === chatPath) {
