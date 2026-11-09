@@ -250,6 +250,10 @@ async function main() {
   const fake = createFakeNavigateUpstream({
     chatPath: core.NAVIGATE_CHAT_PATH,
     doneLiteral: core.NAVIGATE_DONE_LITERAL,
+    // 路径一律从 core 注入 —— 这里再抄一份就等于给"协议漂移"留了条静默通道
+    uploadPath: core.NAVIGATE_UPLOAD_PATH,
+    mePath: core.NAVIGATE_ME_PATH,
+    logoutPath: core.NAVIGATE_LOGOUT_PATH,
     // Web 壳的凭据是同源 httpOnly cookie —— 不是开关，是壳之间真实存在的差异。
     auth: 'cookie',
   });
@@ -314,8 +318,14 @@ async function main() {
     await cdp.send('Page.enable');
     await cdp.send('Page.navigate', { url });
 
-    // 等哨兵 —— 判定以它为准，不靠固定等待
-    const deadline = Date.now() + 60000;
+    // 等哨兵 —— 判定以它为准，不靠固定等待。
+    //
+    // 预算是按**最坏路径**给的，不是按顺利路径：顺利时这一整轮约 11s，但一旦某处
+    // 判红，后面每个 `waitFor` 都会各自等满超时，叠加起来轻易上百秒。预算卡在顺利
+    // 路径的几倍上，红的那次就会以"没等到哨兵"收场 —— 报告落不了地，断言名、probe、
+    // 控制台全丢，只剩一句"可能卡住了"。宁可多等两分钟，也要拿到那份诊断。
+    const SENTINEL_BUDGET_MS = 180000;
+    const deadline = Date.now() + SENTINEL_BUDGET_MS;
     while (sentinel === null && Date.now() < deadline) await sleep(150);
 
     const evalResult = await cdp.send('Runtime.evaluate', {
@@ -332,7 +342,7 @@ async function main() {
     }
 
     if (sentinel === null) {
-      console.error('[web-selfcheck] 60s 内没等到哨兵。控制台输出：');
+      console.error(`[web-selfcheck] ${SENTINEL_BUDGET_MS / 1000}s 内没等到哨兵。控制台输出：`);
       for (const line of consoleLines.slice(-25)) console.error(`  ${line}`);
       throw new Error('自检没有完成（页面可能抛错或卡住）');
     }
@@ -388,6 +398,13 @@ async function main() {
       /** 假上游那一侧的观察 —— "abort 真断了连接"唯一的证据在**对端**，不在客户端自己的说辞里。 */
       navUpstreamStats: fake.stats,
       screenshot: 'docs/evidence/web-shell.png',
+      /**
+       * 页内控制台。**只在失败时才非空**（成功时也留着，代价是几百行噪音）。
+       *
+       * 有它才能区分"断言判错了"和"页面根本没跑起来"—— 后者在截图上是一片白，
+       * 而白屏的原因（未捕获异常 / 模块加载失败）只会出现在这里。
+       */
+      console: report?.ok === true ? [] : consoleLines.slice(-40),
     };
     const reportPath = join(EVIDENCE_DIR, 'web-selfcheck.json');
     await writeFile(reportPath, `${JSON.stringify(archived, null, 2)}\n`);
@@ -402,6 +419,11 @@ async function main() {
       if ((report.failures ?? []).length > 0) {
         console.log('[web-selfcheck] 失败项：');
         for (const f of report.failures) console.log(`  - ${f}`);
+        // 失败时把页内控制台一起倒出来 —— 白屏类故障的唯一线索就在这里
+        if (consoleLines.length > 0) {
+          console.log('[web-selfcheck] 页内控制台（末 15 行）：');
+          for (const line of consoleLines.slice(-15)) console.log(`  ${line}`);
+        }
       }
     }
     console.log(`[web-selfcheck] 证据：docs/evidence/web-selfcheck.json`);

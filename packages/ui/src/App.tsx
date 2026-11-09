@@ -518,7 +518,9 @@ export default function App() {
                   title="会话"
                   action={
                     <div className="flex gap-2">
-                      <Button onClick={handleCreate}>新建会话</Button>
+                      <Button onClick={handleCreate}>
+                        <span data-testid="session-create">新建会话</span>
+                      </Button>
                       <Button onClick={() => void openWindow('session')}>新开一个窗口</Button>
                     </div>
                   }
@@ -530,7 +532,12 @@ export default function App() {
                   ) : (
                     <ul className="divide-y divide-line-list">
                       {sessions.map((s) => (
-                        <li key={s.id} className="flex items-center gap-3 py-2 text-[13px]">
+                        <li
+                          key={s.id}
+                          data-testid="session-item"
+                          data-session-id={s.id}
+                          className="flex items-center gap-3 py-2 text-[13px]"
+                        >
                           <button
                             type="button"
                             onClick={() => dispatch(sessionActivated(s.id))}
@@ -545,6 +552,7 @@ export default function App() {
                           <span className="text-[11px] text-hint">msg {s.messageCount}</span>
                           <button
                             type="button"
+                            data-testid="session-delete"
                             onClick={() => void handleDelete(s.id)}
                             className="text-[11px] text-danger hover:underline"
                           >
@@ -560,7 +568,9 @@ export default function App() {
                   title="工作区 · 本地文件访问的边界"
                   action={
                     <div className="flex gap-2">
-                      <Button onClick={() => void handleGrant()}>授权目录…</Button>
+                      <Button onClick={() => void handleGrant()}>
+                        <span data-testid="ws-grant">授权目录…</span>
+                      </Button>
                       <Button onClick={() => void probeEscape()} disabled={activeWsId === null}>
                         <span data-testid="ws-probe-escape">试读 ../</span>
                       </Button>
@@ -723,7 +733,10 @@ export default function App() {
                   )}
 
                   {fsError && (
-                    <pre className="mt-3 whitespace-pre-wrap rounded border border-danger-line bg-danger-surface p-3 font-mono text-[11px] leading-relaxed text-danger">
+                    <pre
+                      data-testid="fs-error"
+                      className="mt-3 whitespace-pre-wrap rounded border border-danger-line bg-danger-surface p-3 font-mono text-[11px] leading-relaxed text-danger"
+                    >
                       {fsError}
                     </pre>
                   )}
@@ -916,7 +929,7 @@ export default function App() {
 
             {actionError && (
               <Card title="操作失败（错误信封已跨进程保真）" tone="danger">
-                <p className="font-mono text-[12px]">{actionError}</p>
+                <p data-testid="action-error" className="font-mono text-[12px]">{actionError}</p>
               </Card>
             )}
           </div>

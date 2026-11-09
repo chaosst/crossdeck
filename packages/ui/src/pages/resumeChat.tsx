@@ -232,9 +232,9 @@ class ResumeChat extends Component<MyComponentProps, MyComponentState> {
         </Box>
         <div className="px-6 pt-1">
           <div className="bg-stone-100 h-30 rounded-xl pt-3 px-4 flex flex-col">
-            <textarea className="flex-1 outline-0 w-full" style={{resize: "none"}} placeholder="请输入简历相关的问题" onInput={e=>this.setInputStr(e.currentTarget.value)}></textarea>
+            <textarea data-testid="chat-input" className="flex-1 outline-0 w-full" style={{resize: "none"}} placeholder="请输入简历相关的问题" onInput={e=>this.setInputStr(e.currentTarget.value)}></textarea>
             <div className="flex justify-end py-2">
-              <Send onClick={this.sendHandler} className="text-stone-700 cursor-pointer"></Send>
+              <Send data-testid="chat-send" onClick={this.sendHandler} className="text-stone-700 cursor-pointer"></Send>
             </div>
           </div>
         </div>

@@ -33,10 +33,15 @@
  *   abort           **慢慢滴**字，留给客户端中途 abort
  *   slow            token×N，每片 700ms —— **给抓拍用的**（20ms 那一档 300ms 就完了，
  *                   截图只能拍到"还没开始"或"已经结束"），不参与断言
+ *   slow-done       token×N，每片 700ms → done —— slow 的**可断言**版本
  *
  * silent-close 与 killed 必须分成两个：客户端走的是**两条不同的代码路径** ——
  * 干净 EOF 触发 `finishStream()`（"没收到 done 帧"），socket 销毁触发 `reader.read()` 抛错。
  * 合成一个就会漏掉另一条，而两条的失败模式并不相同。
+ *
+ * slow 与 slow-done 也同样要分成两个：`slow` 故意**永不收尾**（服务端一直挂着），
+ * 所以"慢速流最终正常结束"这件事它证明不了 —— 拿它去断言终态只会得到一个
+ * 永远等不到的 done。可断言的长流单列一个，两个场景的用途不重叠。
  *
  * ## 鉴权两种形态（壳之间真实存在的差异，不是开关好玩的）
  *
@@ -60,6 +65,13 @@ export const NAV_SCENARIO_PROMPTS = {
    * 它是**给拍照用的**，不参与断言（断言靠 diagnostics / 事件序列，不靠时序）。
    */
   slow: 'selfcheck:navigate-slow',
+  /**
+   * 慢流的**可断言版本**：同样 700ms 一片，但走完吐 `done` 收尾。
+   *
+   * `slow` 收不了尾（服务端故意一直挂着），所以凡是"跨页签/跨窗口的慢流最终
+   * 有没有正常结束"这类断言，素材只能从这里取。
+   */
+  'slow-done': 'selfcheck:navigate-slow-done',
 };
 
 /** 正常场景吐的文本，切成 5 片 —— 客户端应当分多次收到（不是一次到齐）。 */
@@ -103,6 +115,10 @@ export function createFakeNavigateUpstream(opts) {
   const uploadPath = opts.uploadPath ?? '/api/upload';
   const auth = opts.auth ?? 'cookie';
   const loginPath = opts.loginPath ?? '/api/login/guest';
+  // 登录态与登出：Web 壳读不到 httpOnly cookie，只能拿 `/api/me` 的应答当权威。
+  // 没有这两条路由，浏览器侧"刷新后还登录着吗"就无从验证 —— 而那是 cookie 模式的核心。
+  const mePath = opts.mePath ?? '/api/me';
+  const logoutPath = opts.logoutPath ?? '/api/logout';
   const fixedToken = opts.fixedToken ?? null;
 
   const liveTokens = new Set();
@@ -196,7 +212,8 @@ export function createFakeNavigateUpstream(opts) {
 
     let i = 0;
     // 慢流每片 700ms —— 见 `slow` 场景的说明（它是给抓拍用的，不是给断言用的）。
-    const gapMs = scenario === 'slow' ? 700 : 20;
+    const slow = scenario === 'slow' || scenario === 'slow-done';
+    const gapMs = slow ? 700 : 20;
     timer = setInterval(() => {
       if (stopped || res.writableEnded || res.destroyed) return stop();
 
@@ -209,6 +226,7 @@ export function createFakeNavigateUpstream(opts) {
       stop();
       switch (scenario) {
         case 'normal':
+        case 'slow-done':
           frame('done', doneLiteral);
           stats.ended.push(scenario);
           res.end();
@@ -268,8 +286,34 @@ export function createFakeNavigateUpstream(opts) {
       json(res, 200, { token, role: 'guest', expiresIn: 1800, next: '/' });
       return true;
     }
+    /**
+     * 登录态：认 cookie（或 token）才算登录着。
+     *
+     * 真上游的 `/api/me` 返回账号名与 wikiUrl；这里只需要"认不认这个凭据" +
+     * 账号名，足够验证"浏览器侧唯一能知道的登录态就是这个应答"。
+     */
+    if (req.method === 'GET' && url.pathname === mePath) {
+      const presented = auth === 'cookie' ? cookieToken(req) : (url.searchParams.get('token') ?? null);
+      if (presented === null || !liveTokens.has(presented)) {
+        json(res, 401, { error: 'unauthorized' });
+        return true;
+      }
+      json(res, 200, { username: 'selfcheck-guest', role: 'guest', wikiUrl: '/' });
+      return true;
+    }
+    /** 登出：吊销 + 清 cookie。上游不确认吊销时客户端也要能登出，所以这里回 200。 */
+    if (req.method === 'GET' && url.pathname === logoutPath) {
+      const presented = auth === 'cookie' ? cookieToken(req) : (url.searchParams.get('token') ?? null);
+      if (presented !== null) liveTokens.delete(presented);
+      if (auth === 'cookie') {
+        res.setHeader('set-cookie', 'navigate_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax');
+      }
+      json(res, 200, { ok: true });
+      return true;
+    }
     if (req.method === 'POST' && url.pathname === uploadPath) {
       // 与真上游同一条闸门顺序：先认凭据（401），再认角色（403）。
+      // 真上游上传走 `requireAdminApi`，体验账号拿不到 —— 所以这里**不演 200**：
       // 真上游上传走 `requireAdminApi`，体验账号拿不到 —— 所以这里**不演 200**：
       // 成功路径的解码在 core，由 `scripts/verify-upload-client.mjs` 用真 HTTP
       // 服务器覆盖。这里要验的是浏览器独有的那一段（XHR 挂载 / 进度 / 状态翻译），
