@@ -1,0 +1,263 @@
+/**
+ * ArkWeb 探针页面的**留存副本**（不参与构建 —— `.txt` 后缀就是为此）。
+ *
+ * 原形态是 `entry/src/main/ets/pages/ArkWebProbe.ets`，验完已从产品路径撤出。
+ * P3 要复用的三段：`onInterceptRequest` 自建 origin 回 rawfile、proxy 与端口
+ * 的注册时序（controllerAttached → pageEnd）、端口投递后通知页面。
+ *
+ * 当时验了四件事（与 probe-boot.js 的 S1~S6 一一对应）：
+ *   · rawfile 里的 Vite 产物能否经 onInterceptRequest + 自定义 origin 正常加载
+ *     （resource:// 下 ESM 会被 CORS 拦，这是官方文档写明的限制）
+ *   · registerJavaScriptProxy 的 asyncMethodList 能否返回 Promise
+ *   · WebMessagePort 能否单向推送且保序
+ *   · 真实 React 负载能否挂载、样式是否生效
+ *
+ * 注意 origin 是**自建域名**而不是 resource:// —— 后者连相对路径的 JS 都加载不了。
+ */
+import { webview } from '@kit.ArkWeb';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN: number = 0x3200;
+const TAG: string = 'PROBE';
+/** 自建 origin：只为绕过 resource:// 的跨域限制，不对应任何真实站点。 */
+const ORIGIN: string = 'https://app.crossdeck.local';
+
+const MIME: Map<string, string> = new Map<string, string>([
+  ['html', 'text/html'],
+  ['js', 'text/javascript'],
+  ['mjs', 'text/javascript'],
+  ['css', 'text/css'],
+  ['json', 'application/json'],
+  ['svg', 'image/svg+xml'],
+  ['png', 'image/png'],
+  ['woff2', 'font/woff2'],
+  ['woff', 'font/woff'],
+]);
+
+function mimeOf(path: string): string {
+  const dot: number = path.lastIndexOf('.');
+  if (dot < 0) return 'application/octet-stream';
+  const ext: string = path.slice(dot + 1).toLowerCase();
+  const hit: string | undefined = MIME.get(ext);
+  return hit === undefined ? 'application/octet-stream' : hit;
+}
+
+/** 页面可见的桥对象 —— 暴露给 JS 的方法名必须与 methodList / asyncMethodList 一致。 */
+class ProbeHost {
+  private readonly onReport: (json: string) => void;
+  private readonly onStartPush: (count: number) => void;
+
+  constructor(onReport: (json: string) => void, onStartPush: (count: number) => void) {
+    this.onReport = onReport;
+    this.onStartPush = onStartPush;
+  }
+
+  /** 同步方法：页面交探针报告（只传字符串，避免跨线程序列化的类型丢失）。 */
+  report(json: string): void {
+    this.onReport(json);
+  }
+
+  /** 异步方法：返回 Promise<string>，页面侧 await 接住 —— 这正是 invoke 需要的形状。 */
+  async invoke(channel: string, payloadJson: string): Promise<string> {
+    if (channel === 'probe:echo') {
+      return payloadJson;
+    }
+    if (channel === 'probe:startPush') {
+      // 只取一个整数，不引入 JSON 反序列化的类型体操（ArkTS 对 Object 收窄很严格）
+      let count: number = 300;
+      const hit: RegExpMatchArray | null = payloadJson.match(/"count"\s*:\s*(\d+)/);
+      if (hit !== null) count = Number.parseInt(hit[1], 10);
+      this.onStartPush(count);
+      return '{"ok":true}';
+    }
+    if (channel === 'navigate:status') {
+      // 只求形状可读：让 main.tsx 的 `status.login.hasToken` 不炸，从而真正渲染出登录页
+      return (
+        '{"upstream":{"kind":"scripted","baseUrl":null},' +
+        '"login":{"hasToken":false,"role":null,"expiresAt":null,"encrypted":false,"persisted":false,"note":"probe"}}'
+      );
+    }
+    return 'null';
+  }
+}
+
+/** 推送帧 —— ArkTS 不允许无类型对象字面量，只能显式声明再 new。 */
+class StreamPayload {
+  i: number = 0;
+}
+
+class StreamFrame {
+  kind: string = 'push';
+  channel: string = 'probe:stream';
+  seq: number = 0;
+  payload: StreamPayload = new StreamPayload();
+}
+
+/** 回包 —— 端口是全双工的，invoke 的响应也从这里回去。 */
+class PortReply {
+  kind: string = 'res';
+  id: number = 0;
+  res: string = '';
+}
+
+@Entry
+@Component
+struct ArkWebProbe {
+  private controller: webview.WebviewController = new webview.WebviewController();
+  private host: ProbeHost = new ProbeHost(
+    (json: string) => this.report(json),
+    (count: number) => this.startPush(count),
+  );
+  private pushPort: webview.WebMessagePort | null = null;
+  @State summary: string = '等待页面…';
+
+  /** 报告分片打印：hilog 单条有长度上限，截断会让「结论缺失」看起来像「探针没跑」。 */
+  private report(json: string): void {
+    const CHUNK: number = 700;
+    for (let i = 0; i < json.length; i += CHUNK) {
+      hilog.info(DOMAIN, TAG, 'REPORT[%{public}d/%{public}d] %{public}s', i / CHUNK + 1, Math.ceil(json.length / CHUNK),
+        json.slice(i, i + CHUNK));
+    }
+    this.summary = json.length > 260 ? json.slice(0, 260) + ' …' : json;
+  }
+
+  private startPush(count: number): void {
+    const port: webview.WebMessagePort | null = this.pushPort;
+    if (port === null) {
+      hilog.error(DOMAIN, TAG, 'push 端口尚未建立');
+      return;
+    }
+    const started: number = Date.now();
+    for (let i = 1; i <= count; i++) {
+      const frame: StreamFrame = new StreamFrame();
+      frame.seq = i;
+      frame.payload.i = i;
+      // API 26 的 WebMessage 就是 `ArrayBuffer | string`，直接传字符串，不做对象包装
+      port.postMessageEvent(JSON.stringify(frame));
+    }
+    hilog.info(DOMAIN, TAG, 'push %{public}d 条，耗时 %{public}d ms', count, Date.now() - started);
+  }
+
+  /**
+   * 端口来帧的解析。
+   *
+   * 只用正则取三个标量（kind / id / channel），刻意不 JSON.parse 到类上：
+   * ArkTS 对 Object 的收窄很严格，探针阶段不值得为此引入一整套 DTO 反序列化。
+   * 真桥接要正经做，见设计文档待定项。
+   */
+  private onPortMessage(raw: string): void {
+    const kindHit: RegExpMatchArray | null = raw.match(/"kind"\s*:\s*"([^"]+)"/);
+    const idHit: RegExpMatchArray | null = raw.match(/"id"\s*:\s*(\d+)/);
+    const channelHit: RegExpMatchArray | null = raw.match(/"channel"\s*:\s*"([^"]+)"/);
+    const kind: string = kindHit === null ? '' : kindHit[1];
+    const id: number = idHit === null ? 0 : Number.parseInt(idHit[1], 10);
+    const channel: string = channelHit === null ? '' : channelHit[1];
+
+    if (kind !== 'call') {
+      hilog.info(DOMAIN, TAG, '端口收到未知帧：%{public}s', raw.slice(0, 80));
+      return;
+    }
+    hilog.info(DOMAIN, TAG, 'page→host call #%{public}d %{public}s', id, channel);
+
+    if (channel === 'probe:startPush') {
+      this.reply(id, '{"ok":true}');
+      this.startPush(300);
+      return;
+    }
+    if (channel === 'navigate:status') {
+      // 形状必须够真：main.tsx 的顶层 await 直接读 status.login.hasToken
+      this.reply(
+        id,
+        '{"upstream":{"kind":"scripted","baseUrl":null},' +
+          '"login":{"hasToken":false,"role":null,"expiresAt":null,"encrypted":false,"persisted":false,"note":"probe"}}',
+      );
+      return;
+    }
+    // probe:echo —— 固定形状即可：探针只断言 res.hello === 'port'
+    this.reply(id, '{"hello":"port","echo":true,"id":' + id + '}');
+  }
+
+  private reply(id: number, res: string): void {
+    const port: webview.WebMessagePort | null = this.pushPort;
+    if (port === null) return;
+    const out: PortReply = new PortReply();
+    out.id = id;
+    out.res = res;
+    // res 必须是字符串字段，避免 ArkTS 的嵌套对象序列化差异
+    port.postMessageEvent(JSON.stringify(out));
+  }
+
+  build() {
+    Column() {
+      Text(this.summary)
+        .fontSize(11)
+        .fontColor('#9AA0A6')
+        .width('100%')
+        .padding(6)
+        .maxLines(4)
+      Web({ src: ORIGIN + '/index.html', controller: this.controller })
+        .javaScriptAccess(true)
+        .domStorageAccess(true)
+        .width('100%')
+        .layoutWeight(1)
+        // 注册必须在「控制器已附着、页面尚未加载」之间完成：
+        // 官方注释写明已注册对象要到**下一次页面加载**才对 JS 可见。
+        .onControllerAttached(() => {
+          this.controller.registerJavaScriptProxy(this.host, 'crossdeckHost', ['report'], ['invoke']);
+          hilog.info(DOMAIN, TAG, 'proxy 已注册');
+        })
+        .onPageEnd((event) => {
+          hilog.info(DOMAIN, TAG, '页面加载完成：%{public}s', event.url);
+          const ports: webview.WebMessagePort[] = this.controller.createWebMessagePorts();
+          const first: webview.WebMessagePort | undefined = ports[0];
+          const second: webview.WebMessagePort | undefined = ports[1];
+          if (first === undefined || second === undefined) {
+            hilog.error(DOMAIN, TAG, 'createWebMessagePorts 返回不足两个端口');
+            return;
+          }
+          this.pushPort = second;
+          // 双向：页面的请求也从这个端口进来，响应原路回去 —— 不依赖 proxy 的异步语义
+          second.onMessageEvent((result: webview.WebMessage) => {
+            this.onPortMessage(String(result));
+          });
+          this.controller.postMessage('__probe__', [first], ORIGIN);
+          hilog.info(DOMAIN, TAG, 'push 端口已投递');
+        })
+        .onErrorReceive((event) => {
+          if (event) {
+            hilog.error(DOMAIN, TAG, '资源错误：%{public}s %{public}s', event.request.getRequestUrl(),
+              event.error.getErrorInfo());
+          }
+        })
+        .onConsole((event) => {
+          if (event) hilog.info(DOMAIN, TAG, 'console: %{public}s', event.message.getMessage());
+          return false;
+        })
+        // rawfile 下的资源用自建 origin 提供：相对路径的 ESM 才不会被 CORS 拦。
+        .onInterceptRequest((event) => {
+          if (!event) return null;
+          const url: string = event.request.getRequestUrl();
+          if (!url.startsWith(ORIGIN + '/')) return null;
+          let rel: string = url.slice(ORIGIN.length + 1);
+          const cut: number = rel.search(/[?#]/);
+          if (cut >= 0) rel = rel.slice(0, cut);
+          if (rel === '') rel = 'index.html';
+          if (rel.indexOf('..') >= 0) {
+            hilog.error(DOMAIN, TAG, '拒绝越界路径：%{public}s', rel);
+            return null;
+          }
+          const path: string = 'probe/' + rel;
+          const response: WebResourceResponse = new WebResourceResponse();
+          response.setResponseData($rawfile(path));
+          response.setResponseEncoding('utf-8');
+          response.setResponseMimeType(mimeOf(rel));
+          response.setResponseCode(200);
+          response.setReasonMessage('OK');
+          response.setResponseIsReady(true);
+          return response;
+        })
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
