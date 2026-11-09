@@ -9,7 +9,7 @@
  *   3. 聊天页卸载后仍然在收帧 —— 订阅挂在页上时，切页签就把它一起摘了，
  *      流并不会停，中间那段 token 谁也没写进 store（实测 28 帧丢 17 帧）。
  *
- * 方法：esbuild 打包真源码 → jsdom 里挂真 store → 桩掉 window.bridge.on 后
+ * 方法：esbuild 打包真源码 → jsdom 里挂真 store → 注入桩桥（`setBridge`）后
  * 真实发射 start/token/done → 断言 store 文本逐字符精确。
  *
  * ⚠️ jsdom 不是本项目的依赖（装在托管 node 工作区里），所以本脚本**不进根 verify 链**，
@@ -34,12 +34,15 @@ function loadJsdom() {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(here, '..');
-const rendererSrc = path.join(pkgRoot, 'src', 'renderer');
+// 界面本体在 @crossdeck/ui（三端共用），断言直接打那份源码
+const rendererSrc = path.join(pkgRoot, '..', 'ui', 'src');
+// React 现在装在被测包自己身上 —— 脚手架的 require 要从 ui 解析，否则拿到另一个实例
+const uiRequire = createRequire(path.join(rendererSrc, '..', 'package.json'));
 const SOURCES = {
   page: path.join(rendererSrc, 'pages', 'resumeChat.tsx'),
   binding: path.join(rendererSrc, 'streamBinding.ts'),
 };
-const tmpDir = path.join(pkgRoot, '.verify-stream-binding-tmp');
+const tmpDir = path.join(rendererSrc, '..', 'node_modules', '.verify-stream-binding-tmp');
 
 function assertEq(actual, expected, msg) {
   if (actual !== expected) {
@@ -98,6 +101,7 @@ async function bundleAndImport({ overrides = {}, tag = 'base' } = {}) {
     [
       `export { default as ResumeChat } from '${rel(SOURCES.page)}';`,
       `export { bindAgentStream } from '${rel(SOURCES.binding)}';`,
+      `export { setBridge } from '${rel(path.join(rendererSrc, 'bridge.ts'))}';`,
       `export { store } from '${rel(path.join(rendererSrc, 'store', 'index.ts'))}';`,
       `export { streamReset } from '${rel(path.join(rendererSrc, 'store', 'slices', 'stream.ts'))}';`,
       '',
@@ -162,7 +166,7 @@ const USAGE = { ttftMs: 12, totalMs: 34, completionTokens: TOKENS.join('').lengt
 /** 每个场景返回自己那几条断言的失败集 —— 变体的归因才可能唯一。 */
 async function scenarioExactText(mod) {
   const bridge = makeBridge();
-  globalThis.window.bridge = bridge;
+  mod.setBridge(bridge);
   mod.store.dispatch(mod.streamReset());
   const off = mod.bindAgentStream();
   bridge.emit({ type: 'start', runId: 'r1' });
@@ -182,7 +186,7 @@ async function scenarioExactText(mod) {
 
 async function scenarioUnsubscribeDetaches(mod) {
   const bridge = makeBridge();
-  globalThis.window.bridge = bridge;
+  mod.setBridge(bridge);
   mod.store.dispatch(mod.streamReset());
   const off = mod.bindAgentStream();
   bridge.emit({ type: 'start', runId: 'r1' });
@@ -209,12 +213,12 @@ async function scenarioUnsubscribeDetaches(mod) {
  * 窗口入口不再绑定，帧就只跟着页面的生死走。
  */
 async function scenarioPageUnmount(mod, { windowBind = true } = {}) {
-  const React = nodeRequire('react');
-  const { createRoot } = nodeRequire('react-dom/client');
-  const { Provider } = nodeRequire('react-redux');
+  const React = uiRequire('react');
+  const { createRoot } = uiRequire('react-dom/client');
+  const { Provider } = uiRequire('react-redux');
 
   const bridge = makeBridge();
-  globalThis.window.bridge = bridge;
+  mod.setBridge(bridge);
   mod.store.dispatch(mod.streamReset());
   const off = windowBind ? mod.bindAgentStream() : null;
 

@@ -45,7 +45,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const RENDERER = join(ROOT, 'packages', 'shell-electron', 'src', 'renderer');
+// 渲染层源码已经抽到 packages/ui（三端共用），产物仍由 Electron 壳建
+const RENDERER = join(ROOT, 'packages', 'ui', 'src');
 const STYLES = join(RENDERER, 'styles.css');
 const BUILT_CSS_DIR = join(ROOT, 'packages', 'shell-electron', 'dist', 'renderer', 'assets');
 
@@ -143,7 +144,7 @@ const sources = srcPaths.map((p) => ({
 }));
 const cssText = readFileSync(STYLES, 'utf8');
 
-console.log(`\n渲染层源文件：${srcPaths.length} 个（packages/shell-electron/src/renderer）\n`);
+console.log(`\n渲染层源文件：${srcPaths.length} 个（packages/ui/src）\n`);
 
 // ─────────────────────────────────────────────────────────────
 // ① hex 零残留

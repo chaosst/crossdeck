@@ -220,6 +220,7 @@ async function lintClean() {
     'packages/core/src',
     'packages/contract/src',
     'packages/shell-web/src',
+    'packages/ui/src',
     'packages/shell-electron/src/renderer',
   ]);
   const bad = results.filter((r) => r.errorCount > 0);

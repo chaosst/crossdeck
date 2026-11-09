@@ -641,6 +641,16 @@ packages/
       agent/tools.ts     #   工具注册表（工具失败是业务结果，不是崩溃）
       agent/model.ts     #   ModelPort + ScriptedModel（未接真 LLM 时的确定性替身）
       agent/runtime.ts   #   run 生命周期：恰好一个终态事件
+  ui/                    # ★ 三端共用的渲染层（React 19 + Tailwind + Redux Toolkit）
+    src/index.ts         #   对外唯一出口：mountApp({ bridge })
+    src/mount.tsx        #   注入桥 → 取登录态 → 接流 → 挂载到 #root
+    src/bridge.ts        #   桥的注入点（setBridge / requireBridge）—— 它不认 window.bridge
+    src/api.ts           #   全部通道调用都经这里，返回类型由 IpcInvokeMap 推导
+    src/App.tsx          #   主界面（会话列表 / 聊天 / 工作区文件树 / 更新卡片）
+    src/pages/           #   登录 / 简历问答 / 输出 / markdown 渲染
+    src/store/           #   Redux 切片：只放客户端 UI 状态
+    src/styles.css       #   @theme static 里是色值唯一真源
+    tsconfig.json        #   lib=ES2022+DOM + types=[] —— 铁律的机制本身
   shell-web/             #   ★ 试金石：同一份 core 跑在浏览器里
     src/ports.ts         #     OPFS 实现（无 symlink → 逃逸检测退化为纯字符串）
     src/selfcheck.ts     #     61 条断言（能力降级 / scope / 内核 / 真实 UI 点击）
@@ -659,10 +669,10 @@ packages/
       devServer.ts       #     内嵌 Vite（仅 --dev 动态导入）
       selfcheck.ts       #     端到端自检（夹具 + 探针 + 截图 + 报告）
     src/preload/bridge.ts#   最小暴露面（必须是 CJS）
-    src/renderer/        #   React 19 渲染层（含工作区文件树）
+    src/renderer/        #   只剩入口：main.tsx 把 window.bridge 交给 @crossdeck/ui
     scripts/launch.mjs   #   启动器：清 ELECTRON_RUN_AS_NODE + 自检收尾（强杀进程树）
     tsconfig.main.json   #   lib=ES2022 + types=[node]（没有 DOM）
-    tsconfig.renderer.json #  lib=ES2022+DOM + types=[]（没有 node）
+    tsconfig.renderer.json #  lib=ES2022+DOM + types=[]（没有 node）；只覆盖入口与 window 声明
   shell-ohos/            #   鸿蒙壳（DevEco 工程，**刻意不进 pnpm workspace**，见下）
     entry/src/main/ets/
       pages/Index.ets    #     单窗口 UI（ArkUI 声明式；四节：能力 / 会话 / 流式 / spike）
@@ -674,7 +684,7 @@ packages/
     scripts/verify-ohos.mjs  # 编译 → 装 → 起 → 点 → 截图 → 归档 → 判定
     spike/ets-rejects-conditional-types.ets.txt # M6-0 的反例留档（见「决策」一节）
 scripts/
-  verify-type-alignment.mjs  # 11 个类型负例（三个 tsconfig 项目各覆盖到）
+  verify-type-alignment.mjs  # 16 个类型负例（main / ui / web 三个 tsconfig 项目各覆盖到）
   verify-lint-boundaries.mjs # 17 个 lint 负例 + 5 个必须沉默的正例
   verify-core-purity.mjs     # core 铁律扫描（CI 层）
   verify-core-scope.mjs      # PathGuard / WorkspaceStore 的 72 条断言（加载 core 编译产物）

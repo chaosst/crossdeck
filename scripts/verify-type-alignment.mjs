@@ -35,14 +35,15 @@ const SHELL = join(ROOT, 'packages', 'shell-electron');
 
 const PROJECTS = {
   main: join(SHELL, 'tsconfig.main.json'),
-  renderer: join(SHELL, 'tsconfig.renderer.json'),
+  // 渲染层已抽到 packages/ui（三端共用），负例打在 ui 的 TS 项目上
+  renderer: join(ROOT, 'packages', 'ui', 'tsconfig.json'),
   // Web 壳（试金石）：types 置空 + 浏览器构建。
   // 它同时是**第三种环境** —— 拿不到 node、只拿得到 DOM，
   // 而且它把 core 的源码整个编译进来，core 有半点平台依赖都会在这里现形。
   web: join(ROOT, 'packages', 'shell-web', 'tsconfig.json'),
 };
 
-const RENDERER_API = 'packages/shell-electron/src/renderer/api.ts';
+const RENDERER_API = 'packages/ui/src/api.ts';
 const HANDLERS = 'packages/shell-electron/src/main/handlers.ts';
 const PRELOAD = 'packages/shell-electron/src/preload/bridge.ts';
 const WEB_MAIN = 'packages/shell-web/src/main.ts';
@@ -55,7 +56,7 @@ const CASES = [
     file: RENDERER_API,
     append: `
 export function __caseA() {
-  return window.bridge.invoke(IPC.agentStream);
+  return requireBridge().invoke(IPC.agentStream);
 }
 `,
     expect: /agent:stream/,
@@ -67,7 +68,7 @@ export function __caseA() {
     file: RENDERER_API,
     append: `
 export function __caseB() {
-  return window.bridge.invoke(IPC.agentRun, { sessionId: 's1' });
+  return requireBridge().invoke(IPC.agentRun, { sessionId: 's1' });
 }
 `,
     expect: /input/i,
@@ -91,7 +92,7 @@ export function __caseC() {
     file: RENDERER_API,
     append: `
 export function __caseD() {
-  return window.bridge.on(IPC.agentStream, (e) => (e.type === 'token' ? e.name : ''));
+  return requireBridge().on(IPC.agentStream, (e) => (e.type === 'token' ? e.name : ''));
 }
 `,
     expect: /name/i,
@@ -140,7 +141,7 @@ export function __caseG() {
     file: RENDERER_API,
     append: `
 export function __caseH() {
-  return window.bridge.invoke(IPC.fsListDir, { path: '.' });
+  return requireBridge().invoke(IPC.fsListDir, { path: '.' });
 }
 `,
     expect: /workspaceId/,
@@ -152,7 +153,7 @@ export function __caseH() {
     file: RENDERER_API,
     append: `
 export async function __caseI() {
-  const stat = await window.bridge.invoke(IPC.fsStat, { workspaceId: 'w', path: '.' });
+  const stat = await requireBridge().invoke(IPC.fsStat, { workspaceId: 'w', path: '.' });
   const numeric: number = stat.size;
   const badShape: typeof stat = { kind: 'file' };
   return [numeric, badShape];
@@ -192,7 +193,7 @@ export function __caseK() {
     file: RENDERER_API,
     append: `
 export function __caseL() {
-  return window.bridge.on(IPC.updateCheck, () => {});
+  return requireBridge().on(IPC.updateCheck, () => {});
 }
 `,
     expect: /update:check/,
@@ -206,7 +207,7 @@ export function __caseL() {
     file: RENDERER_API,
     append: `
 export function __caseM() {
-  return window.bridge.on(IPC.updateStatus, (s) => (s.stage === 'available' ? s.percent : 0));
+  return requireBridge().on(IPC.updateStatus, (s) => (s.stage === 'available' ? s.percent : 0));
 }
 `,
     expect: /percent/,

@@ -17,8 +17,9 @@ import * as esbuild from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(here, '..');
-const rendererDir = path.join(pkgRoot, 'src', 'renderer');
-const tmpDir = path.join(pkgRoot, 'node_modules', '.store-verify');
+// 界面本体在 @crossdeck/ui（三端共用），断言直接打那份源码
+const rendererDir = path.join(pkgRoot, '..', 'ui', 'src');
+const tmpDir = path.join(rendererDir, '..', 'node_modules', '.store-verify');
 
 const SOURCES = {
   sessions: path.join(rendererDir, 'store', 'slices', 'sessions.ts'),

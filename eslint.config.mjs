@@ -204,6 +204,8 @@ export default [
   {
     files: [
       'packages/shell-web/src/**/*.ts',
+      'packages/ui/src/**/*.ts',
+      'packages/ui/src/**/*.tsx',
       'packages/shell-electron/src/renderer/**/*.ts',
       'packages/shell-electron/src/renderer/**/*.tsx',
     ],
