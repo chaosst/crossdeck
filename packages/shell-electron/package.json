@@ -9,12 +9,8 @@
   "dependencies": {
     "@crossdeck/contract": "workspace:*",
     "@crossdeck/core": "workspace:*",
-    "@reduxjs/toolkit": "^2.13.0",
-    "electron-updater": "^6.8.9",
-    "lucide-react": "^1.54.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "react-redux": "^9.3.0"
+    "@crossdeck/ui": "workspace:*",
+    "electron-updater": "^6.8.9"
   },
   "scripts": {
     "setup:electron": "node scripts/setup-electron.mjs",

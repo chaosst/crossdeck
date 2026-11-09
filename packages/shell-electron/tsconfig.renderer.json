@@ -10,6 +10,8 @@
     // 这和"渲染进程 nodeIntegration: false"是同一条边界的两种表述。
     "types": []
   },
+  // 这里只剩壳自己的两件事：入口 main.tsx 与 window.bridge 的声明。
+  // 界面本体在 ../ui，它有自己的 tsconfig，同样 types: []。
   "include": ["src/renderer"],
-  "references": [{ "path": "../contract" }]
+  "references": [{ "path": "../contract" }, { "path": "../ui" }]
 }

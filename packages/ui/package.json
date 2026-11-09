@@ -1,0 +1,26 @@
+{
+  "name": "@crossdeck/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "三端共用的渲染层 —— 只认 BridgeApi，不认任何平台",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@crossdeck/contract": "workspace:*",
+    "@reduxjs/toolkit": "^2.13.0",
+    "lucide-react": "^1.54.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-redux": "^9.3.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
+}

@@ -20,6 +20,7 @@ import type {
   WindowKind,
   Workspace,
 } from '@crossdeck/contract';
+import { requireBridge } from './bridge';
 
 /**
  * renderer 侧的桥消费层 —— 类型对齐验证的第三处引用。
@@ -61,43 +62,43 @@ export interface BootSnapshot {
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
-  return window.bridge.invoke(IPC.systemInfo);
+  return requireBridge().invoke(IPC.systemInfo);
 }
 
 export async function listSessions(): Promise<SessionMeta[]> {
-  return window.bridge.invoke(IPC.sessionList);
+  return requireBridge().invoke(IPC.sessionList);
 }
 
 export async function createSession(title?: string): Promise<SessionMeta> {
   // 无 title 时省略整个 req 字段（exactOptionalPropertyTypes 下不能传 undefined）
   return title === undefined
-    ? window.bridge.invoke(IPC.sessionCreate, {})
-    : window.bridge.invoke(IPC.sessionCreate, { title });
+    ? requireBridge().invoke(IPC.sessionCreate, {})
+    : requireBridge().invoke(IPC.sessionCreate, { title });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  return window.bridge.invoke(IPC.sessionDelete, { sessionId });
+  return requireBridge().invoke(IPC.sessionDelete, { sessionId });
 }
 
 export async function listSessionMessages(sessionId: string): Promise<SessionMessageDetail[]> {
-  return window.bridge.invoke(IPC.sessionMessages, { sessionId });
+  return requireBridge().invoke(IPC.sessionMessages, { sessionId });
 }
 
 /** 打开动作卡片的外链。URL 由 main 校验，这里不做任何判断。 */
 export async function openAction(url: string): Promise<void> {
-  return window.bridge.invoke(IPC.actionOpen, { url });
+  return requireBridge().invoke(IPC.actionOpen, { url });
 }
 
 export async function startAgentRun(sessionId: string, input: string): Promise<{ runId: string }> {
-  return window.bridge.invoke(IPC.agentRun, { sessionId, input });
+  return requireBridge().invoke(IPC.agentRun, { sessionId, input });
 }
 
 export async function abortAgentRun(runId: string): Promise<void> {
-  return window.bridge.invoke(IPC.agentAbort, { runId });
+  return requireBridge().invoke(IPC.agentAbort, { runId });
 }
 
 export async function openWindow(kind: WindowKind): Promise<{ windowId: number }> {
-  return window.bridge.invoke(IPC.windowOpen, { kind });
+  return requireBridge().invoke(IPC.windowOpen, { kind });
 }
 
 // ── M4：工作区授权 + 文件系统 ────────────────────────────────
@@ -105,30 +106,30 @@ export async function openWindow(kind: WindowKind): Promise<{ windowId: number }
 // 少传会在**编译期**报错（负例 H 验证的正是这一点）。
 
 export async function listWorkspaces(): Promise<Workspace[]> {
-  return window.bridge.invoke(IPC.workspaceList);
+  return requireBridge().invoke(IPC.workspaceList);
 }
 
 export async function grantWorkspace(): Promise<Workspace | null> {
-  return window.bridge.invoke(IPC.workspaceGrant);
+  return requireBridge().invoke(IPC.workspaceGrant);
 }
 
 export async function revokeWorkspace(workspaceId: string): Promise<void> {
-  return window.bridge.invoke(IPC.workspaceRevoke, { workspaceId });
+  return requireBridge().invoke(IPC.workspaceRevoke, { workspaceId });
 }
 
 export async function listDir(workspaceId: string, path: string): Promise<DirEntry[]> {
-  return window.bridge.invoke(IPC.fsListDir, { workspaceId, path });
+  return requireBridge().invoke(IPC.fsListDir, { workspaceId, path });
 }
 
 export async function readFileText(
   workspaceId: string,
   path: string,
 ): Promise<{ text: string; truncated: boolean }> {
-  return window.bridge.invoke(IPC.fsReadFile, { workspaceId, path });
+  return requireBridge().invoke(IPC.fsReadFile, { workspaceId, path });
 }
 
 export async function controlAgentRun(runId: string, type: 'pause' | 'resume'): Promise<void> {
-  return window.bridge.invoke(IPC.agentControl, { runId, type });
+  return requireBridge().invoke(IPC.agentControl, { runId, type });
 }
 
 // ── navigate：上游配置 + 登录 ────────────────────────────────
@@ -137,31 +138,31 @@ export async function controlAgentRun(runId: string, type: 'pause' | 'resume'): 
 // 负例 N 断言的正是"在渲染层写 res.token 必须编译失败"。
 
 export async function getNavigateStatus(): Promise<NavigateStatus> {
-  return window.bridge.invoke(IPC.navigateStatus);
+  return requireBridge().invoke(IPC.navigateStatus);
 }
 
 export async function setNavigateUpstream(upstreamUrl: string | null): Promise<NavigateStatus> {
-  return window.bridge.invoke(IPC.navigateSetUpstream, { upstreamUrl });
+  return requireBridge().invoke(IPC.navigateSetUpstream, { upstreamUrl });
 }
 
 export async function loginNavigateGuest(): Promise<GuestLoginResult> {
-  return window.bridge.invoke(IPC.navigateLoginGuest);
+  return requireBridge().invoke(IPC.navigateLoginGuest);
 }
 
 export async function loginNavigate(body: object): Promise<GuestLoginResult> {
-  return window.bridge.invoke(IPC.navigateLogin, body);
+  return requireBridge().invoke(IPC.navigateLogin, body);
 }
 
 export async function getLoginValidCode(): Promise<LoginCodeResult> {
-  return window.bridge.invoke(IPC.navigateLoginCode)
+  return requireBridge().invoke(IPC.navigateLoginCode)
 }
 
 export async function probeChallengeNeeded(username = ''): Promise<LoginChallengeNeeded> {
-  return window.bridge.invoke(IPC.navigateChallengeNeeded, username === '' ? {} : { username })
+  return requireBridge().invoke(IPC.navigateChallengeNeeded, username === '' ? {} : { username })
 }
 
 export async function logoutNavigate(): Promise<NavigateStatus> {
-  return window.bridge.invoke(IPC.navigateLogout);
+  return requireBridge().invoke(IPC.navigateLogout);
 }
 
 /**
@@ -172,7 +173,7 @@ export function attachStreamRenderer(
   onToken: (text: string) => void,
   onToolStart: (name: string) => void,
 ): () => void {
-  return window.bridge.on(IPC.agentStream, (event) => {
+  return requireBridge().on(IPC.agentStream, (event) => {
     switch (event.type) {
       case 'token':
         onToken(event.text);
@@ -192,7 +193,7 @@ export function attachStreamRenderer(
 
 /** 订阅原始事件流（App 用这个，需要看到全部事件类型）。 */
 export function onAgentEvent(handler: (event: AgentStreamEvent) => void): () => void {
-  return window.bridge.on(IPC.agentStream, handler);
+  return requireBridge().on(IPC.agentStream, handler);
 }
 
 /**
@@ -205,17 +206,17 @@ export async function uploadWorkspaceFile(
   workspaceId: string,
   path: string,
 ): Promise<UploadedDocument> {
-  return window.bridge.invoke(IPC.documentUpload, { workspaceId, path });
+  return requireBridge().invoke(IPC.documentUpload, { workspaceId, path });
 }
 
 /** 上传进度推送（三端归一后，比例单调）。 */
 export function onUploadProgress(handler: (progress: UploadProgress) => void): () => void {
-  return window.bridge.on(IPC.documentUploadProgress, handler);
+  return requireBridge().on(IPC.documentUploadProgress, handler);
 }
 
 /** 会话变更推送：只报「哪个会话动了」，要不要重拉由调用方决定。 */
 export function onSessionChanged(handler: (change: SessionChange) => void): () => void {
-  return window.bridge.on(IPC.sessionChanged, handler);
+  return requireBridge().on(IPC.sessionChanged, handler);
 }
 
 // ── M5：自动更新 ─────────────────────────────────────────────
@@ -224,20 +225,20 @@ export function onSessionChanged(handler: (change: SessionChange) => void): () =
 // 换一个壳（鸿蒙走 AppGallery）时，这几行一行都不用改。
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  return window.bridge.invoke(IPC.updateCheck);
+  return requireBridge().invoke(IPC.updateCheck);
 }
 
 export async function downloadUpdate(): Promise<void> {
-  return window.bridge.invoke(IPC.updateDownload);
+  return requireBridge().invoke(IPC.updateDownload);
 }
 
 export async function installUpdate(): Promise<void> {
-  return window.bridge.invoke(IPC.updateInstall);
+  return requireBridge().invoke(IPC.updateInstall);
 }
 
 /** 订阅更新进度。返回取消函数 —— 与 agent 流同一个理由：卸载不摘会泄漏。 */
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): () => void {
-  return window.bridge.on(IPC.updateStatus, handler);
+  return requireBridge().on(IPC.updateStatus, handler);
 }
 
 // ── M6-1：性能采样 ───────────────────────────────────────────
@@ -245,7 +246,7 @@ export function onUpdateStatus(handler: (status: UpdateStatus) => void): () => v
 // 时钟不用管：main 用的是自己的 Date.now()，这里只负责说"这件事刚刚发生了"。
 
 export async function samplePerf(input: PerfSampleInput = {}): Promise<PerfSnapshot> {
-  return window.bridge.invoke(IPC.perfSample, input);
+  return requireBridge().invoke(IPC.perfSample, input);
 }
 
 /**

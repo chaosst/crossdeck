@@ -1,11 +1,10 @@
 import type { BridgeApi } from '@crossdeck/contract';
 
 /**
- * window.bridge 的全局声明 —— 全项目**唯一**一处。
+ * window.bridge 的全局声明 —— 只在 Electron 壳里成立。
  *
- * 放在 .d.ts 而不是 api.ts 里，是为了让 api.ts 保持"纯消费方"：
- * 它只演示怎么用，不负责声明桥长什么样。
- * 两侧共用同一份 BridgeApi，所以 renderer 写错方法名 / 参数 → 编译期报错。
+ * UI 自己不声明它：`@crossdeck/ui` 只认注入进来的 `BridgeApi`，不知道宿主
+ * 是 preload 还是 ArkWeb。这个 .d.ts 描述的是**这个壳**往 window 上放了什么。
  */
 
 declare global {
