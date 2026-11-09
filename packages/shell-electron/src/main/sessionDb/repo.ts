@@ -20,6 +20,7 @@ import type {
   Usage,
 } from '@crossdeck/contract';
 import type { FlushMessageInput, InsertMessageInput, SessionRepository } from '@crossdeck/core';
+import { EVENT_SQL, MESSAGE_SQL, SESSION_SQL, selectEventsForMessages } from '@crossdeck/core';
 
 export type { FlushMessageInput, InsertMessageInput };
 
@@ -165,9 +166,7 @@ export class SessionRepo implements SessionRepository {
   // ── 会话 ────────────────────────────────────────────────
 
   listSessions(): SessionMeta[] {
-    const rows = this.#db
-      .prepare('SELECT id, title, createdAt, updatedAt, messageCount FROM sessions ORDER BY updatedAt DESC')
-      .all() as unknown as SessionRowShape[];
+    const rows = this.#db.prepare(SESSION_SQL.listSessions).all() as unknown as SessionRowShape[];
     return rows.map((r) => ({
       id: r.id,
       title: r.title,
@@ -178,9 +177,7 @@ export class SessionRepo implements SessionRepository {
   }
 
   getSession(sessionId: string): SessionMeta | null {
-    const row = this.#db
-      .prepare('SELECT id, title, createdAt, updatedAt, messageCount FROM sessions WHERE id = ?')
-      .get(sessionId) as unknown as SessionRowShape | undefined;
+    const row = this.#db.prepare(SESSION_SQL.getSession).get(sessionId) as unknown as SessionRowShape | undefined;
     if (row === undefined) return null;
     return {
       id: row.id,
@@ -202,7 +199,7 @@ export class SessionRepo implements SessionRepository {
       messageCount: 0,
     };
     this.#db
-      .prepare('INSERT INTO sessions (id, title, createdAt, updatedAt, messageCount) VALUES (?, ?, ?, ?, ?)')
+      .prepare(SESSION_SQL.createSession)
       .run(meta.id, meta.title, meta.createdAt, meta.updatedAt, meta.messageCount);
     return meta;
   }
@@ -214,11 +211,9 @@ export class SessionRepo implements SessionRepository {
 
     this.#db.exec('BEGIN IMMEDIATE');
     try {
-      this.#db
-        .prepare('DELETE FROM events WHERE messageId IN (SELECT messageId FROM messages WHERE sessionId = ?)')
-        .run(sessionId);
-      this.#db.prepare('DELETE FROM messages WHERE sessionId = ?').run(sessionId);
-      this.#db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+      this.#db.prepare(SESSION_SQL.deleteEventsOfSession).run(sessionId);
+      this.#db.prepare(SESSION_SQL.deleteMessagesOfSession).run(sessionId);
+      this.#db.prepare(SESSION_SQL.deleteSession).run(sessionId);
       this.#db.exec('COMMIT');
     } catch (err) {
       this.#rollback();
@@ -241,16 +236,11 @@ export class SessionRepo implements SessionRepository {
     this.#db.exec('BEGIN IMMEDIATE');
     let seq: number;
     try {
-      const row = this.#db
-        .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM messages WHERE sessionId = ?')
-        .get(input.sessionId) as unknown as { next?: number } | undefined;
+      const row = this.#db.prepare(MESSAGE_SQL.nextSeq).get(input.sessionId) as unknown as { next?: number } | undefined;
       seq = typeof row?.next === 'number' ? row.next : 1;
 
       this.#db
-        .prepare(
-          'INSERT INTO messages (messageId, sessionId, seq, role, content, status, runId, usage, error, createdAt, updatedAt) ' +
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
-        )
+        .prepare(MESSAGE_SQL.insert)
         .run(
           messageId,
           input.sessionId,
@@ -263,9 +253,7 @@ export class SessionRepo implements SessionRepository {
           now,
           now,
         );
-      this.#db
-        .prepare('UPDATE sessions SET messageCount = messageCount + 1, updatedAt = ? WHERE id = ?')
-        .run(now, input.sessionId);
+      this.#db.prepare(SESSION_SQL.bumpMessageCount).run(now, input.sessionId);
       this.#db.exec('COMMIT');
     } catch (err) {
       this.#rollback();
@@ -293,10 +281,7 @@ export class SessionRepo implements SessionRepository {
     try {
       const now = this.#deps.now();
       const result = this.#db
-        .prepare(
-          'UPDATE messages SET content = ?, status = ?, usage = ?, error = ?, updatedAt = ?, runId = COALESCE(?, runId) ' +
-            'WHERE messageId = ?',
-        )
+        .prepare(MESSAGE_SQL.updateDraft)
         .run(
           input.content,
           input.status,
@@ -312,20 +297,14 @@ export class SessionRepo implements SessionRepository {
         throw new AppError('NOT_FOUND', `消息不存在：${input.messageId}`);
       }
 
-      const insert = this.#db.prepare(
-        'INSERT OR IGNORE INTO events (eventId, messageId, seq, kind, payload, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-      );
+      const insert = this.#db.prepare(EVENT_SQL.insert);
       for (const event of input.events) {
         const encoded = encodeEvent(event);
         insert.run(event.eventId, event.messageId, event.seq, encoded.kind, encoded.payload, event.createdAt);
       }
 
       if (input.terminal) {
-        this.#db
-          .prepare(
-            'UPDATE sessions SET updatedAt = ? WHERE id = (SELECT sessionId FROM messages WHERE messageId = ?)',
-          )
-          .run(now, input.messageId);
+        this.#db.prepare(SESSION_SQL.touchSessionOfMessage).run(now, input.messageId);
       }
       this.#db.exec('COMMIT');
     } catch (err) {
@@ -337,18 +316,12 @@ export class SessionRepo implements SessionRepository {
   /** 一次取全：消息按 seq，事件按 messageId 批量查再一次分组（不做 N+1）。 */
   listMessages(sessionId: string): SessionMessageDetail[] {
     const rows = this.#db
-      .prepare(
-        'SELECT messageId, sessionId, seq, role, content, status, runId, usage, error, createdAt, updatedAt ' +
-          'FROM messages WHERE sessionId = ? ORDER BY seq ASC',
-      )
+      .prepare(MESSAGE_SQL.listBySession)
       .all(sessionId) as unknown as MessageRowShape[];
     if (rows.length === 0) return [];
 
-    const placeholders = rows.map(() => '?').join(', ');
     const eventRows = this.#db
-      .prepare(
-        `SELECT eventId, messageId, seq, kind, payload, createdAt FROM events WHERE messageId IN (${placeholders}) ORDER BY seq ASC`,
-      )
+      .prepare(selectEventsForMessages(rows.length))
       .all(...rows.map((r) => r.messageId)) as unknown as EventRowShape[];
 
     const byMessage = new Map<string, SessionEvent[]>();

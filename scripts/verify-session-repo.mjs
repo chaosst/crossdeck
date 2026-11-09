@@ -56,6 +56,7 @@ writeFileSync(
   [
     `export * from '${rel(join('packages', 'shell-electron', 'src', 'main', 'sessionDb', 'open.ts'))}';`,
     `export * from '${rel(join('packages', 'shell-electron', 'src', 'main', 'sessionDb', 'repo.ts'))}';`,
+    `export * from '${rel(join('packages', 'core', 'src', 'session', 'sessionSql.ts'))}';`,
     '',
   ].join('\n'),
   'utf8',
@@ -95,9 +96,18 @@ try {
   process.exit(1);
 }
 
-const { openSessionDb, SessionRepo, readUserVersion } = await import(pathToFileURL(OUT).href);
+const { openSessionDb, SessionRepo, readUserVersion, SESSION_SQL, MESSAGE_SQL, EVENT_SQL, selectEventsForMessages } =
+  await import(pathToFileURL(OUT).href);
 
-for (const [name, value] of Object.entries({ openSessionDb, SessionRepo, readUserVersion })) {
+for (const [name, value] of Object.entries({
+  openSessionDb,
+  SessionRepo,
+  readUserVersion,
+  SESSION_SQL,
+  MESSAGE_SQL,
+  EVENT_SQL,
+  selectEventsForMessages,
+})) {
   if (value === undefined) {
     console.error(`❌ 模块没有导出 ${name} —— 断言无法进行`);
     process.exit(1);
@@ -306,7 +316,44 @@ console.log('\n── ⑤ 删会话 ──');
 }
 
 // ═════════════════════════════════════════════════════════════
-console.log('\n── ⑥ 关闭后再写 ──');
+console.log('\n── ⑥ DML 单一真源（core/session/sessionSql.ts）──');
+{
+  const allSql = { ...SESSION_SQL, ...MESSAGE_SQL, ...EVENT_SQL };
+  const broken = [];
+  for (const [name, sql] of Object.entries(allSql)) {
+    try {
+      // 真库上编译一遍：列名拼错、占位符与列数不匹配都会在这里抛
+      opened.db.prepare(sql);
+    } catch (err) {
+      broken.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  check(
+    `${Object.keys(allSql).length} 条 DML 都能在真库上编译（搬错列名会在这里死）`,
+    broken.length === 0,
+    broken.join(' | '),
+  );
+
+  const batch = selectEventsForMessages(3);
+  check('selectEventsForMessages(3) 生成三个占位符', (batch.match(/\?/g) ?? []).length === 3, batch);
+  let batchOk = true;
+  try {
+    opened.db.prepare(batch);
+  } catch {
+    batchOk = false;
+  }
+  check('批查语句能在真库上编译', batchOk);
+
+  checkThrows(
+    'selectEventsForMessages(0) 必须抛（空 IN 是语法错，不是「查不到」）',
+    () => selectEventsForMessages(0),
+    '正整数',
+  );
+  checkThrows('selectEventsForMessages(1.5) 必须抛', () => selectEventsForMessages(1.5), '正整数');
+}
+
+// ═════════════════════════════════════════════════════════════
+console.log('\n── ⑦ 关闭后再写 ──');
 {
   opened.close();
   checkThrows('关库后再写必须抛（不许静默成功）', () =>
