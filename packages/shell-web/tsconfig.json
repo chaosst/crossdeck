@@ -19,8 +19,13 @@
     //
     // 反过来，如果这里能编译过、能打包、能跑 —— 那"一套 core 多端壳"
     // 就不是一句口号，而是一件被验证过的事。
-    "types": []
+    "types": [],
+    // 本项目自己一行 JSX 都没有，但共享 UI 是以**源码**形式被引用的
+    // （`@crossdeck/ui` 的 types/exports 都指向 `src/index.ts`，不产出 dist），
+    // 于是 ui 的 `.tsx` 会作为依赖进到这个 Program 里 —— 没有 jsx 选项它们直接
+    // 编译不过（TS6142）。这条与「试金石」无关，只是源码引用的必要条件。
+    "jsx": "react-jsx"
   },
   "include": ["src"],
-  "references": [{ "path": "../contract" }, { "path": "../core" }]
+  "references": [{ "path": "../contract" }, { "path": "../core" }, { "path": "../ui" }]
 }

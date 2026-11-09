@@ -8,6 +8,14 @@
  * 那条纪律是 Web 壳作为「试金石」的机制本身。
  */
 declare global {
+  /**
+   * 构建期注入的版本号（见 `vite.config.ts` 的 `define`）。
+   *
+   * 不用 `import.meta.env`：那需要 vite 的类型声明，而这个项目处在 `types: []`
+   * 的约束下 —— 那条纪律是 Web 壳作为「试金石」的机制本身，不为了少写一行声明破例。
+   */
+  const __APP_VERSION__: string;
+
   interface Window {
     showDirectoryPicker?: (opts?: {
       mode?: 'read' | 'readwrite';

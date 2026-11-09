@@ -153,6 +153,18 @@ class WebFsPort implements FsPort {
     return out;
   }
 
+  /**
+   * 读原始字节 —— 上传要的不是文本。
+   *
+   * 不在 `FsPort` 端口里：那是 core 的读写契约（文本导向），
+   * 而"把文件交给 XHR"是浏览器这一侧独有的动作。
+   */
+  async readBlob(abs: string): Promise<File> {
+    const file = await this.#fileAt(abs, false);
+    if (file === null) throw new Error(`ENOENT: ${abs}`);
+    return file.getFile();
+  }
+
   async stat(abs: string): Promise<FileStat> {
     const dir = await this.#dirAt(abs);
     if (dir !== null) return { kind: 'directory', size: 0, mtimeMs: 0 };
