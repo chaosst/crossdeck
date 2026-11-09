@@ -22,13 +22,15 @@
  *    会把**环境问题**报成**设备问题** —— 正是"测量手段骗了你"那一类。
  *    实测（受限会话）：本脚本在那里停在 ②，exit 2、`skipped: 'spawn-blocked'`。
  *
- * ## 这一趟验什么（三件事，与 Electron / Web 两侧同一口径）
+ * ## 这一趟验什么（四件事，与 Electron / Web 两侧同一口径）
  *
  * ① **真的连上了** —— 宿主侧起假上游（`scripts/fake-navigate-upstream.mjs`），
  *    经 `hdc rport` 映射进模拟器（鸿蒙没有 Android 的 `10.0.2.2`，模拟器里的
  *    `127.0.0.1` 指它自己）；
  * ② **终态恰好一个**（含两条**不同**的断流路径：干净 EOF / socket 被销毁）；
- * ③ **abort 有效** —— 证据在**对端**：客户端自称 abort 不算，得看上游有没有看见连接被关。
+ * ③ **abort 有效** —— 证据在**对端**：客户端自称 abort 不算，得看上游有没有看见连接被关；
+ * ④ **端口语义没漂** —— 同一份仓储用例（`checkSessionRepository`，22 条）跑在
+ *    relationalStore 上：规格来自 core，后端是鸿蒙的 RDB。
  *
  * 帧解析 / 映射的细粒度断言仍然只在 `scripts/verify-core-sse.mjs`，
  * 这里**不抄第三套**（三套漂移比一套没有更糟）。
@@ -68,7 +70,7 @@ import {
   createFakeNavigateUpstream,
 } from '../../../scripts/fake-navigate-upstream.mjs';
 // 判定层抽成纯函数：它能在**没有真机**时被合成行驱动（见该文件头部）。
-import { judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
+import { judgeRepo, judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = join(HERE, '..');
@@ -121,11 +123,15 @@ function run(cmd, args, opts = {}) {
 }
 
 /**
- * 同步等一会儿。刻意用 `Atomics.wait` 而不是 `spawnSync(node -e setTimeout)` ——
- * 后者每次要多起一个 Node 进程，而且失败时只留下一句看不懂的 die 信息。
+ * 等一会儿 —— **必须是异步的**。
+ *
+ * 曾经用 `Atomics.wait` 同步等，结果它把 Node 事件循环整个堵死：设备侧连接
+ * 建立了（rport 在监听、应用也能连上），但同进程的假上游收不到任何回调 ——
+ * 请求从未被 accept，应用侧表现为 8s 超时 `2300028`。这就是"测量手段把
+ * 被测对象堵死"的现场：假上游和轮询循环在同一个进程里，轮询不许独占线程。
  */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -325,14 +331,14 @@ function centerOf(label) {
   return { center: { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) } };
 }
 
-function clickAndShot(label, name) {
+async function clickAndShot(label, name) {
   const found = centerOf(label);
   if (found.center === undefined) {
     record(`点击「${label}」`, false, `${found.error} —— 拒绝静默跳过`);
     return;
   }
   hdc(['shell', `uinput -T -c ${found.center.x} ${found.center.y}`]);
-  sleepSync(7000);
+  await sleep(7000);
   const s = shot(name);
   record(`点击「${label}」→ ${name}.jpg`, s.ok, s.detail);
 }
@@ -362,23 +368,89 @@ const upstream = createFakeNavigateUpstream({
   auth: 'token',
   fixedToken: TOKEN,
 });
+// ⚠️ 必须绑 `::`（IPv6 双栈），不能绑 `127.0.0.1`。
+// hdc 的 rport 在宿主侧是往 `localhost` 转发的，而它解析到 `::1`：
+// 只监听 IPv4 时，设备侧 TCP 能连上（rport 在设备上 listen），但转发立刻断掉 ——
+// 应用侧表现为 8s 超时 `2300028 Operation timeout`，看起来像"上游没起"。
+// 实测：同一个 server 换成 `listen(0, '::')` 后，`/__selfcheck/nav-fixture` 立刻到达。
+/**
+ * 设备侧该端口是否已经在监听。
+ *
+ * 为什么要查：`hdc rport` 遇到设备端口被占（上一轮残留的映射）时会输出
+ * `[Fail]TCP Port listen failed at <port>`，**但退出码仍然是 0**。只看关键字
+ * 会漏，只看退出码更会漏 —— 应用侧最终表现为 8s 超时，看起来像"上游没起"。
+ */
+function devicePortInUse(port) {
+  const r = hdc(['shell', `netstat -tunl 2>/dev/null | grep -c ':${port} '`]);
+  return Number((r.stdout ?? '0').trim()) > 0;
+}
+
+/**
+ * 在**固定端口段**里挑一个"宿主空闲 + 设备未占用"的端口监听。
+ *
+ * ⚠️ 不要用 `listen(0)` 让系统随机分配：动态段（49152–65535）上的端口，
+ * `hdc rport` 会在设备侧 LISTEN、应用也能连上，但请求一条都到不了宿主。
+ * 固定段没有这个问题（实测 64001/64002/64004/38000 均通）。
+ *
+ * ⚠️ 也**不能只挑宿主空闲的**：设备侧可能还留着上一轮的映射（hdc 的
+ * `fport rm` 对陈旧条目常常报"不存在"却仍列在表里），此时 rport 会失败，
+ * 而失败信号只是一个 `[Fail]` 字符串。所以这里两侧都查。
+ */
+async function listenOnFixedPort(server, from = 64000, to = 64999) {
+  for (let port = from; port <= to; port += 1) {
+    if (devicePortInUse(port)) continue;
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = (err) => {
+          server.removeListener('listening', onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          server.removeListener('error', onError);
+          resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, '::');
+      });
+      return port;
+    } catch {
+      // 端口被占：试下一个。server 在 EADDRINUSE 之后仍可再次 listen。
+    }
+  }
+  throw new Error(`端口段 ${from}-${to} 里没有空闲端口`);
+}
+
 const upstreamServer = createServer(async (req, res) => {
+  if (process.env.OHOS_DEBUG_UPSTREAM === '1') console.error(`[upstream] ${req.method} ${req.url}`);
   if (await upstream.handle(req, res)) return;
   res.writeHead(404).end('not found');
 });
-await new Promise((resolvePromise) => upstreamServer.listen(0, '127.0.0.1', resolvePromise));
-const upstreamPort = upstreamServer.address().port;
+const upstreamPort = await listenOnFixedPort(upstreamServer);
 const deviceBase = `http://127.0.0.1:${upstreamPort}`;
 record('假上游已起', true, `${deviceBase}（token 鉴权）`);
 
 const rport = hdc(['rport', `tcp:${upstreamPort}`, `tcp:${upstreamPort}`]);
 const rportOut = `${rport.stdout ?? ''}${rport.stderr ?? ''}`.trim();
-const rportOk = spawnFailure(rport) === null && !/\[Fail\]|error/i.test(rportOut);
+const rportCmdOk = spawnFailure(rport) === null && rportOut.length > 0 && !rportOut.includes('[Fail]');
+// 第二道：设备侧真的在监听。只信命令回显会被「退出码 0 + [Fail]」骗过去 ——
+// 那正是这条链路曾经连续几轮失败的原因：脚本自报 rport OK，应用却一直超时。
+const listening = devicePortInUse(upstreamPort);
+const rportOk = rportCmdOk && listening;
 record(
   'hdc rport',
   rportOk,
-  rportOk ? `tcp:${upstreamPort} → 宿主` : (spawnFailure(rport) ?? (rportOut.slice(-160) || '（无输出）')),
+  rportOk
+    ? `tcp:${upstreamPort} → 宿主（设备侧已监听）`
+    : `命令=${rportOut.slice(-140) || '（无输出）'}｜设备侧监听=${listening}`,
 );
+if (!rportOk) {
+  console.error('❌ 端口映射没建立 —— 后面的 navigate 判定只会得到 8s 超时，先修这里');
+  evidence.skipped = 'rport-failed';
+  writeFileSync(join(EVIDENCE, 'ohos-selfcheck.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+  upstreamServer.close();
+  process.exit(1);
+}
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -392,13 +464,13 @@ hdc(['shell', `aa force-stop ${BUNDLE}`]);
 const startDemo = hdc(['shell', `aa start -a ${ABILITY} -b ${BUNDLE}`]);
 const demoOk = (startDemo.stdout ?? '').includes('start ability successfully');
 record('aa start（演示形态，脚本上游）', demoOk, demoOk ? 'start ability successfully' : (startDemo.stdout ?? '').slice(-200));
-sleepSync(6000);
+await sleep(6000);
 
 const overview = shot('ohos-shell');
 record('截图 · 首屏', overview.ok, overview.detail);
 
-clickAndShot('发送', 'ohos-shell-stream');
-clickAndShot('带工具', 'ohos-shell-tool');
+await clickAndShot('发送', 'ohos-shell-stream');
+await clickAndShot('带工具', 'ohos-shell-tool');
 
 // ─────────────────────────────────────────────────────────────
 // ⑧ 第二趟：**带配置**启动 —— 地址与 token 走命令行参数
@@ -414,7 +486,7 @@ const startNav = hdc([
 ]);
 const navStartOk = (startNav.stdout ?? '').includes('start ability successfully');
 record('aa start（--ps 配置通道）', navStartOk, navStartOk ? deviceBase : (startNav.stdout ?? '').slice(-200));
-sleepSync(6000);
+await sleep(6000);
 
 const panel = shot('ohos-shell-selfcheck-boot');
 record('截图 · 自检面板（首屏）', panel.ok, panel.detail);
@@ -438,7 +510,7 @@ let midText = '';
     hdc(['shell', `uinput -T -c ${found.center.x} ${found.center.y}`]);
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
-      sleepSync(500);
+      await sleep(500);
       const dump = dumpTexts();
       if (dump.texts === undefined) continue;
       const partial = dump.texts.find(
@@ -461,7 +533,7 @@ let midText = '';
 }
 
 // 等慢流自己收尾，再拍终帧 —— 中间帧与终帧并排看，就是"逐字"最直接的证据
-sleepSync(6000);
+await sleep(6000);
 {
   const s = shot('ohos-shell-selfcheck-done');
   const dump = dumpTexts();
@@ -493,7 +565,7 @@ sleepSync(6000);
     let lines = [];
     const deadline = Date.now() + 90000;
     while (Date.now() < deadline) {
-      sleepSync(2000);
+      await sleep(2000);
       const dump = dumpTexts();
       if (dump.texts === undefined) continue;
       lines = dump.texts.filter((t) => t.startsWith('[SELFCHECK]'));
@@ -513,9 +585,44 @@ sleepSync(6000);
   }
 }
 
-// ⑪ 收尾 + 归档
+// ⑪ 会话仓储一致性 —— 同一份 core 用例（22 条）跑在 relationalStore 上
+//
+// 这一趟证明的是"端口语义在三端一致"里最硬的一条：用例是**同一份代码**，
+// 只是后端换了。判定层仍是纯函数（`judgeRepo`），这里只负责点击、抓行、record。
+// `minCases` 从 core 的 `CONFORMANCE_CASE_COUNT` 取 —— 用例数只有一个真源。
+// ─────────────────────────────────────────────────────────────
+{
+  const found = centerOf('自检·仓储');
+  if (found.center === undefined) {
+    record('点击「自检·仓储」', false, `${found.error} —— 拒绝静默跳过`);
+  } else {
+    hdc(['shell', `uinput -T -c ${found.center.x} ${found.center.y}`]);
+
+    let lines = [];
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      await sleep(1500);
+      const dump = dumpTexts();
+      if (dump.texts === undefined) continue;
+      lines = dump.texts.filter((t) => t.startsWith('[SELFCHECK] repo'));
+      if (lines.some((l) => l.includes('repo total='))) break;
+    }
+    evidence.repoLines = lines;
+
+    const repoShot = shot('ohos-shell-selfcheck-repo');
+    record('截图 · 仓储一致性', repoShot.ok, repoShot.detail);
+
+    const judged = judgeRepo(lines, core.CONFORMANCE_CASE_COUNT);
+    evidence.repoVerdicts = judged.verdicts;
+    for (const v of judged.verdicts) record(v.name, v.ok, v.detail);
+  }
+}
+
+// ⑫ 收尾 + 归档
 try {
-  hdc(['rport', 'rm', `tcp:${upstreamPort}`]);
+  // ⚠️ 删除用的是 `hdc fport rm <taskstring>`，不是 `hdc rport rm` ——
+  // 后者不是合法命令（第一次写错时它静默失败），残留的反向规则会让后续的映射行为异常。
+  hdc(['fport', 'rm', `tcp:${upstreamPort} tcp:${upstreamPort}`]);
 } catch {
   /* 尽力而为：rport 没摘干净只是留个映射，不影响判定 */
 }
@@ -542,6 +649,7 @@ evidence.screenshots = [
   'ohos-shell-selfcheck-midstream.jpg',
   'ohos-shell-selfcheck-done.jpg',
   'ohos-shell-selfcheck-verdict.jpg',
+  'ohos-shell-selfcheck-repo.jpg',
 ];
 writeFileSync(join(EVIDENCE, 'ohos-selfcheck.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 

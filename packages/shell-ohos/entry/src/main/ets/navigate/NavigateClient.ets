@@ -1,5 +1,4 @@
-import { NAVIGATE_CHAT_PATH, NavigateStream, createNavigateReporter, describeNavigateHttpStatus,
-  errorMessage } from '../shared/core/index';
+import { NAVIGATE_CHAT_PATH, NavigateStream, createNavigateReporter, describeNavigateHttpStatus } from '../shared/core/index';
 import type { Cancel, ChatClient, ModelSink, ChatRequest, AgentDeps, NavigateDiagnostic } from '../shared/core/index';
 import { http } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -11,6 +10,12 @@ export interface OhosNavigateClientConfig {
   readonly firstFrameTimeoutMs: number;
   readonly deps: AgentDeps;
   readonly onDiagnostic?: (d: NavigateDiagnostic) => void;
+}
+
+/** BusinessError 不是 Error 实例，`errorMessage` 只会给出 `[object Object]`。 */
+function describeError(err: BusinessError<void>): string {
+  const message = err.message ?? '';
+  return message.length > 0 ? `${message}（code=${err.code}）` : `code=${err.code}`;
 }
 
 export function createOhosNavigateClient(cfg: OhosNavigateClientConfig): ChatClient {
@@ -46,14 +51,16 @@ export function createOhosNavigateClient(cfg: OhosNavigateClientConfig): ChatCli
         if (text.length > 0) stream.feed(text);
       });
 
-      // dataEnd 才是"数据流结束"。complete 是"请求结束"，正常/异常都会到。
+      // 非 2xx 也是一条**完整的响应**：dataEnd 会照常来。终态必须等 complete 回调的
+      // statusCode 才能定 —— 在 dataEnd 里就 finishStream 会把 HTTP 400 误报成
+      // "没收到 done 帧"，两种失败模式（上游拒绝 / 上游截断）就搅在一起了。
+      let sawDataEnd = false;
+
       httpRequest.on('dataEnd', () => {
         if (stream.settled || stream.cancelled) return;
+        sawDataEnd = true;
         const tail = decoder.decodeToString(new Uint8Array(0), { stream: false });
         if (tail.length > 0) stream.feed(tail);
-        // 见过 done 时是 no-op；没见过 done 就是被截断 —— 由引擎判定并报错。
-        stream.finishStream();
-        httpRequest.destroy();
       });
 
       stream.armFirstFrameTimer();
@@ -67,13 +74,25 @@ export function createOhosNavigateClient(cfg: OhosNavigateClientConfig): ChatCli
         readTimeout: 120000,
         connectTimeout: 30000,
       }, (err: BusinessError<void>, statusCode: number) => {
-        // 走到这里还没终态 = 请求结束了却没经过 dataEnd（非 2xx 走这条路）→ 用状态码报错。
         if (stream.cancelled || stream.settled) return;
+        httpRequest.destroy();
         if (err) {
-          stream.settleError(`上游请求失败（HTTP ${statusCode}）：${errorMessage(err)}`);
+          // 走到这里 = 连接层失败（socket 被销毁 / 连不上），一个字节都没能读完。
+          // statusCode 在这个分支拿不到（undefined），写 0：表示"压根没拿到响应"，与 401 可区分。
+          const code = statusCode === undefined ? 0 : statusCode;
+          stream.settleError(`上游请求失败（HTTP ${code}）：${describeError(err)}`);
           return;
         }
-        stream.settleError(describeNavigateHttpStatus(statusCode, null));
+        if (!sawDataEnd) {
+          stream.settleError(describeNavigateHttpStatus(statusCode, null));
+          return;
+        }
+        if (statusCode >= 200 && statusCode < 300) {
+          // 见过 done 时是 no-op；没见过 done 就是被截断 —— 由引擎判定并报错。
+          stream.finishStream();
+        } else {
+          stream.settleError(describeNavigateHttpStatus(statusCode, null));
+        }
       });
 
       // 只断连接，不碰 sink（终态归 runtime）。

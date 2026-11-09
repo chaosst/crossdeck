@@ -128,6 +128,26 @@ check('最后一条是版本提交点', fresh[fresh.length - 1] === `PRAGMA user
 
 check('新库建表与迁移用同一份 SQL（防两套真源漂移）', SCHEMA_SQL === fresh[0]);
 
+// ─────────────────────────────────────────────────────────────
+// 逐条形态：鸿蒙 RDB 的 executeSql 一次只执行一条，所以那份清单必须自己站得住。
+// 这几条钉住的是「单条执行」这个前提，不是重复上面已经验过的 SQL 内容。
+// ─────────────────────────────────────────────────────────────
+const { SCHEMA_STATEMENTS } = core;
+check('core 导出 SCHEMA_STATEMENTS', Array.isArray(SCHEMA_STATEMENTS), String(SCHEMA_STATEMENTS));
+if (Array.isArray(SCHEMA_STATEMENTS)) {
+  check(
+    '每一条都是单语句（不含分号）—— 否则单条执行的后端会静默只跑前半截',
+    SCHEMA_STATEMENTS.every((s) => !s.includes(';')),
+    SCHEMA_STATEMENTS.filter((s) => s.includes(';')).map((s) => s.slice(0, 40)).join(' | ') || '无',
+  );
+  check('整串 = 逐条拼接（两种形态不会漂）', SCHEMA_SQL === SCHEMA_STATEMENTS.join(';\n'));
+  check(
+    '三张表 + 三个索引 = 6 条',
+    SCHEMA_STATEMENTS.length === 6,
+    `${SCHEMA_STATEMENTS.length} 条：${SCHEMA_STATEMENTS.map((s) => s.split(' ').slice(0, 3).join(' ')).join(' | ')}`,
+  );
+}
+
 check('同版本 → 空数组（不写版本、不建表）', planMigration(SCHEMA_VERSION, SCHEMA_VERSION).length === 0);
 
 checkThrows('降级（1 → 0）必须抛', () => planMigration(1, 0), '不支持降级');
@@ -173,6 +193,32 @@ check('事件的会话内唯一序索引存在', indexes.includes('ux_events_mes
 check('列表倒序索引存在', indexes.includes('idx_sessions_updated'), indexes.join(','));
 
 check('版本号写进去了', db.prepare('PRAGMA user_version').get().user_version === SCHEMA_VERSION);
+
+// 逐条执行等价 —— 鸿蒙 RDB 就是这样建库的（executeSql 一次一条）。
+// 少了任何一条，表或索引集合就会差出来；这条同时也证明"两种形态同源"不是嘴上说说。
+{
+  const stepDb = new DatabaseSync(':memory:');
+  let stepErr;
+  try {
+    for (const stmt of SCHEMA_STATEMENTS ?? []) stepDb.exec(stmt);
+  } catch (e) {
+    stepErr = e;
+  }
+  const shape = (d) =>
+    JSON.stringify([
+      d.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((r) => r.name),
+      d
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all()
+        .map((r) => r.name),
+    ]);
+  check(
+    '逐条执行建出同样的表与索引（鸿蒙 RDB 的建库姿势）',
+    stepErr === undefined && shape(stepDb) === shape(db),
+    stepErr === undefined ? shape(stepDb) : String(stepErr?.message),
+  );
+  stepDb.close();
+}
 
 const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
 check(

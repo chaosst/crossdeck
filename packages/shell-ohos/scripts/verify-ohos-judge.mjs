@@ -51,11 +51,29 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NAV_NORMAL_CHUNKS } from '../../../scripts/fake-navigate-upstream.mjs';
-import { judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
+import { judgeRepo, judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE = join(HERE, 'parse-ohos-selfcheck.mjs');
 const EXPECT_TEXT = NAV_NORMAL_CHUNKS.join('');
+
+// 用例数只有一个真源：core 的 CONFORMANCE_CASE_COUNT。在这里写死一个数字，
+// 以后加用例它不会跟着长 —— 而"规格被删空还全绿"正是要防的那件事。
+const CORE_DIST = join(HERE, '..', '..', '..', 'packages', 'core', 'dist', 'index.js');
+let core;
+try {
+  core = await import(pathToFileURL(CORE_DIST).href);
+} catch (err) {
+  console.error(`❌ 无法加载 core 编译产物：${CORE_DIST}`);
+  console.error('   先跑 `pnpm typecheck`。');
+  console.error(`   ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+const MIN_CASES = core.CONFORMANCE_CASE_COUNT;
+if (!Number.isInteger(MIN_CASES) || MIN_CASES < 1) {
+  console.error(`❌ core 没有导出 CONFORMANCE_CASE_COUNT（拿到 ${String(MIN_CASES)}）—— 判定没法对账`);
+  process.exit(1);
+}
 
 // 格式逐字抄自 Index.ets 的 runSelfCheck：
 //   `run <key> terminal=… count=… code=… text=… frames=…[ error=…][ msg=…]`
@@ -66,7 +84,7 @@ const GOOD = [
   '[SELFCHECK] fixture scenarios=5',
   '[SELFCHECK] run normal terminal=done count=1 code=- text=23 frames=5',
   '[SELFCHECK] run silent-close terminal=error count=1 code=UPSTREAM text=22 frames=5 msg=上游提前关闭连接：没收到 done 帧',
-  '[SELFCHECK] run killed terminal=error count=1 code=UPSTREAM text=22 frames=5 msg=读取上游流失败：terminated',
+  '[SELFCHECK] run killed terminal=error count=1 code=UPSTREAM text=22 frames=5 msg=上游请求失败（HTTP 0）：Transferred a partial file（code=2300018）',
   '[SELFCHECK] run upstream-error terminal=error count=1 code=UPSTREAM text=22 frames=5 msg=上游报错：SELFCHECK：上游故意报错',
   '[SELFCHECK] run abort terminal=error count=1 code=ABORTED text=3 frames=3 msg=用户取消了这次提问',
   '[SELFCHECK] run unknown terminal=error count=1 code=- msg=HTTP 400：自检假上游不认识这个场景',
@@ -86,7 +104,7 @@ const cases = [
   },
   {
     name: 'M2 两条断流被合成一条（killed 说成"没收到 done 帧"）',
-    mutate: sub('msg=读取上游流失败：terminated', 'msg=上游提前关闭连接：没收到 done 帧'),
+    mutate: sub('msg=上游请求失败（HTTP 0）：Transferred a partial file（code=2300018）', 'msg=上游提前关闭连接：没收到 done 帧'),
     mustFail: ['场景 killed · 措辞'],
   },
   {
@@ -164,7 +182,7 @@ for (const c of cases) {
 // 变异体写到系统临时目录，不往仓库里丢文件。
 // ─────────────────────────────────────────────────────────────
 const src = readFileSync(MODULE, 'utf8');
-const weakened = src.replace("msgHas: '读取上游流失败'", 'msgHas: null');
+const weakened = src.replace("msgHas: '上游请求失败'", 'msgHas: null');
 if (weakened === src) {
   console.log('❌ R1 无法在判定表里删掉 killed 的 msgHas —— 锚点失配，变异没生效（别当成通过）');
   bad += 1;
@@ -187,7 +205,101 @@ if (weakened === src) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// 仓储一致性判定（7 发变异 + 1 发反向）
+//
+// 报告格式逐字抄自 Index.ets 的 `runRepoCheck`。`MIN_CASES` 来自 core，
+// total 比它多 1 —— 多出来的是"持久化"那条（harness 提供 reopen 才会被加入）。
+// ─────────────────────────────────────────────────────────────
+const REPO_OK = [`[SELFCHECK] repo total=${MIN_CASES + 1} passed=${MIN_CASES + 1} failed=0 skipped=0`];
+
+const repoCases = [
+  { name: 'Q0 基线：仓储判定应全过', mutate: (l) => l, mustFail: [] },
+  {
+    name: 'Q1 没有 repo 汇总行（用例没跑起来）',
+    mutate: () => [],
+    mustFail: ['仓储 · 报告存在'],
+  },
+  {
+    name: 'Q2 用例集被删空（total=1 也算"全过"）',
+    mutate: () => ['[SELFCHECK] repo total=1 passed=1 failed=0 skipped=0'],
+    mustFail: ['仓储 · 用例数没被删空'],
+  },
+  {
+    name: 'Q3 自报"全过"但少了一条（passed < total）',
+    mutate: () => [`[SELFCHECK] repo total=${MIN_CASES + 1} passed=${MIN_CASES} failed=0 skipped=0`],
+    mustFail: ['仓储 · 全过'],
+  },
+  {
+    name: 'Q4 有一条失败，且明细列出来了',
+    mutate: () => [
+      `[SELFCHECK] repo total=${MIN_CASES + 1} passed=${MIN_CASES} failed=1 skipped=0`,
+      '[SELFCHECK] repoFail [ohos-rdb] flushMessage：覆盖写 —— 期望 3，实际 2',
+    ],
+    mustFail: ['仓储 · 全过'],
+  },
+  {
+    name: 'Q5 有失败但明细被隐瞒（failed=1，一行 repoFail 都没有）',
+    mutate: () => [`[SELFCHECK] repo total=${MIN_CASES + 1} passed=${MIN_CASES} failed=1 skipped=0`],
+    mustFail: ['仓储 · 全过', '仓储 · 失败行如实列出'],
+    note: '这条挂两条是设计使然：failures 非空同时说明"没全过"和"明细没列"',
+  },
+  {
+    name: 'Q6 跳过了持久化那条（harness 没提供 reopen）',
+    mutate: () => [`[SELFCHECK] repo total=${MIN_CASES} passed=${MIN_CASES} failed=0 skipped=1`],
+    mustFail: ['仓储 · 没有跳过的用例'],
+  },
+  {
+    name: 'Q7 整体抛异常（建库就崩了）',
+    mutate: () => [
+      `[SELFCHECK] repo total=${MIN_CASES + 1} passed=${MIN_CASES + 1} failed=0 skipped=0`,
+      '[SELFCHECK] repoError 打开会话库失败：code=14800000',
+    ],
+    mustFail: ['仓储 · 无异常'],
+  },
+];
+
+for (const c of repoCases) {
+  const lines = c.mutate([...REPO_OK]);
+  const { verdicts } = judgeRepo(lines, MIN_CASES);
+  const failed = verdicts.filter((v) => !v.ok).map((v) => v.name).sort();
+  const ok = JSON.stringify(failed) === JSON.stringify([...c.mustFail].sort());
+  if (!ok) bad += 1;
+  console.log(`${ok ? '✅' : '❌'} ${c.name}`);
+  console.log(`     挂了 ${failed.length} 条：${failed.length === 0 ? '（无）' : failed.join(' | ')}`);
+  if (!ok) console.log(`     期望挂：${c.mustFail.length === 0 ? '（无）' : c.mustFail.join(' | ')}`);
+  if (c.note !== undefined) console.log(`     ⚠️ ${c.note}`);
+}
+
+// 反向：把"用例数没被删空"那条断言删掉，Q2 必须**存活**。
+// 只有这一步能证明 Q2 是被它杀掉的，而不是恰好别处也不同意。
+{
+  const anchor = /^\s*push\('仓储 · 用例数没被删空'.*$/m;
+  const weakened = src.replace(anchor, '');
+  if (weakened === src) {
+    console.log('❌ Q8 无法在判定层删掉"用例数没被删空" —— 锚点失配，变异没生效（别当成通过）');
+    bad += 1;
+  } else {
+    const mutPath = join(tmpdir(), `crossdeck-ohos-judge-repo-${process.pid}.mjs`);
+    writeFileSync(mutPath, weakened, 'utf8');
+    try {
+      const mutant = await import(pathToFileURL(mutPath).href);
+      const { verdicts } = mutant.judgeRepo(repoCases[2].mutate([...REPO_OK]), MIN_CASES);
+      const failed = verdicts.filter((v) => !v.ok).map((v) => v.name);
+      const survived = !failed.includes('仓储 · 用例数没被删空');
+      console.log(`${survived ? '✅' : '❌'} Q8 反向：拿掉"用例数没被删空"后，Q2 必须不再挂`);
+      console.log(`     挂了 ${failed.length} 条：${failed.length === 0 ? '（无）' : failed.join(' | ')}`);
+      if (!survived) {
+        console.log('     说明它被别的断言顺带覆盖了 —— 要重新想它到底测什么');
+        bad += 1;
+      }
+    } finally {
+      rmSync(mutPath, { force: true });
+    }
+  }
+}
+
 console.log('────────────────────────────────────────────────');
-console.log(`[ohos-judge] 共 ${cases.length + 1} 例，异常 ${bad} 例`);
+console.log(`[ohos-judge] 共 ${cases.length + repoCases.length + 2} 例，异常 ${bad} 例`);
 console.log(`[ohos-judge] DONE code=${bad === 0 ? 0 : 1}`);
 process.exit(bad === 0 ? 0 : 1);

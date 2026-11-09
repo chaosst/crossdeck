@@ -9,10 +9,10 @@ function renderColumn<T>(c: ColumnDef<T>): string {
   return parts.join(' ');
 }
 
-/** 渲染建表语句与索引（一个字符串里多条语句，`exec` 可直接跑）。 */
-function renderTable<T>(t: TableDef<T>): string {
+/** 渲染一张表的建表语句与索引 —— **一条一句**，单条执行的后端不用自己拆分号。 */
+function renderTable<T>(t: TableDef<T>): string[] {
   const body = t.columns.map(renderColumn).join(',\n  ');
-  return [`CREATE TABLE IF NOT EXISTS ${t.name} (\n  ${body}\n)`, ...(t.indexes ?? [])].join(';\n');
+  return [`CREATE TABLE IF NOT EXISTS ${t.name} (\n  ${body}\n)`, ...(t.indexes ?? [])];
 }
 
 const sessionTable: TableDef<SessionRow> = {
@@ -61,21 +61,30 @@ const eventTable: TableDef<EventRow> = {
   indexes: ['CREATE UNIQUE INDEX IF NOT EXISTS ux_events_message_seq ON events (messageId, seq)'],
 };
 
-/** 升到该版本要执行的语句。**只追加不改**：新版本加在末尾，旧条目永远不动。 */
-const MIGRATIONS = new Map<number, string>([
-  [1, [renderTable(sessionTable), renderTable(messageTable), renderTable(eventTable)].join(';\n')],
+/** 升到该版本要执行的语句（一条一句）。**只追加不改**：新版本加在末尾，旧条目永远不动。 */
+const MIGRATIONS = new Map<number, readonly string[]>([
+  [1, [...renderTable(sessionTable), ...renderTable(messageTable), ...renderTable(eventTable)]],
 ]);
 
 /** 程序认识的最高版本。 */
 export const SCHEMA_VERSION = 1;
 
-const CURRENT_SQL = MIGRATIONS.get(SCHEMA_VERSION);
-if (CURRENT_SQL === undefined) {
+const CURRENT_STATEMENTS = MIGRATIONS.get(SCHEMA_VERSION);
+if (CURRENT_STATEMENTS === undefined) {
   throw new Error(`SCHEMA_VERSION=${SCHEMA_VERSION} 没有对应的迁移语句`);
 }
 
-/** 新库直接用这份建表。 */
-export const SCHEMA_SQL = CURRENT_SQL;
+/**
+ * 新库建表语句（一条一句）。
+ *
+ * 为什么同时留两种形态：SQLite 的 `exec` 能吃一整串，而鸿蒙 `relationalStore`
+ * 的 `executeSql` **一次只执行一条**。让每个壳自己去 split 分号，就等于让每个壳
+ * 各持一份"怎么切 SQL"的尺子 —— 那正是单一真源要避免的东西。
+ */
+export const SCHEMA_STATEMENTS: readonly string[] = CURRENT_STATEMENTS;
+
+/** 新库建表（整串，`exec` 可直接跑）。就是 `SCHEMA_STATEMENTS` 拼起来的。 */
+export const SCHEMA_SQL = CURRENT_STATEMENTS.join(';\n');
 
 /** 布尔 → INTEGER。`node:sqlite` 不接受 boolean 绑定，直接传会抛错。 */
 export function toSqlBool(value: boolean): number {
@@ -108,9 +117,10 @@ export function planMigration(from: number, to: number): string[] {
 
   const statements: string[] = [];
   for (let version = from + 1; version <= to; version += 1) {
-    const sql = MIGRATIONS.get(version);
-    if (sql === undefined) throw new Error(`缺少第 ${version} 版的迁移语句`);
-    statements.push(sql);
+    const batch = MIGRATIONS.get(version);
+    if (batch === undefined) throw new Error(`缺少第 ${version} 版的迁移语句`);
+    // 一版一个可 exec 的串：迁移的调用方是 SQLite 的 exec（能跑多语句）
+    statements.push(batch.join(';\n'));
   }
   // 版本号最后写：中途崩了下次会重跑，上面每条语句都带 IF NOT EXISTS
   statements.push(`PRAGMA user_version = ${to}`);

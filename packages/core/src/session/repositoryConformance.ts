@@ -526,6 +526,14 @@ export interface ConformanceResult {
   readonly skipped: readonly string[];
 }
 
+/**
+ * 必备用例数（**不含**可选的"持久化"那条）。
+ *
+ * 三端的报告拿它对账：用例集被删空时"全过"会退化成一句空话，而这个数字
+ * 是从 CASES 长度算出来的 —— 删用例的人必须先改这里，改不动就说明规格还在。
+ */
+export const CONFORMANCE_CASE_COUNT = CASES.length;
+
 /** 跑全套。内部串行 —— 用例之间有共享的时钟，并发跑会互相干扰。 */
 export async function checkSessionRepository(harness: SessionRepositoryHarness): Promise<ConformanceResult> {
   const failures: string[] = [];
@@ -538,10 +546,11 @@ export async function checkSessionRepository(harness: SessionRepositoryHarness):
     async run(repo) {
       const s = await repo.createSession('要活过重启的');
       await writeAssistant(repo, s.id, '重启前的正文', (messageId) => [sourcesEvent(messageId, 1, 'ev_keep')]);
-      const reopen = harness.reopen;
-      if (reopen === undefined) throw new ConformanceError('harness 没有提供 reopen');
+      if (harness.reopen === undefined) throw new ConformanceError('harness 没有提供 reopen');
 
-      const again = await reopen();
+      // ⚠️ 必须留在 harness 上调用。把方法摘下来直接 `reopen()` 会丢 `this`：
+      // 闭包式 harness 侥幸能过，class 式 harness 直接崩 —— 鸿蒙那份就是这么揪出来的。
+      const again = await harness.reopen();
       const sessions = await again.listSessions();
       eq(sessions.length, 1, '重开后的会话数');
       eq(at(sessions, 0).title, '要活过重启的', '标题');

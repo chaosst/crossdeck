@@ -11,8 +11,10 @@ import { SessionStore, AgentRuntime, ScriptedModel, TOOL_SCENARIO_MARKER,
   DEFAULT_FIRST_FRAME_TIMEOUT_MS, errorMessage } from '../shared/core/index';
 import type { AgentDeps, ModelPort, NavigateDiagnostic } from '../shared/core/index';
 import { http } from '@kit.NetworkKit';
+import { common } from '@kit.AbilityKit';
 import { createOhosNavigateClient } from '../navigate/NavigateClient';
 import { OhosNavigateModel } from '../navigate/NavigateModel';
+import { runRepoConformance } from '../session/repoHarness';
 // ⚠️ 这三者在 contract 里，不在 core —— core 对 contract 只 `import type` 自用，
 //    并不再导出（那是"零运行时依赖"这条约定的另一面）。
 import type { AgentStreamEvent, SessionMeta, Usage } from '../shared/contract/index';
@@ -118,7 +120,9 @@ async function httpGetText(url: string): Promise<HttpGetResult> {
     const body: string = typeof res.result === 'string' ? res.result : '';
     return { ok: res.responseCode === 200, body, detail: `HTTP ${res.responseCode}` };
   } catch (e) {
-    return { ok: false, body: '', detail: errorMessage(e) };
+    // BusinessError 不是 Error 实例，`errorMessage` 只能给一句兜底 —— 把 code 也带上，
+    // 否则 2300007（解析失败）/ 2300006（连不上）在报告里长得一模一样。
+    return { ok: false, body: '', detail: `${errorMessage(e)} ${JSON.stringify(e)}` };
   } finally {
     client.destroy();
   }
@@ -186,6 +190,9 @@ struct Index {
   /** 自检链路的实时逐字流（与演示链路分开 —— 两条链路互不干扰） */
   @State navStreamText: string = '';
   @State navMeta: string = '（自检链路尚未运行）';
+  /** 会话仓储一致性（22 条用例）的输出行；放在常驻区，不依赖上游配置 */
+  @State repoLines: string[] = [];
+  @State repoRunning: boolean = false;
 
   private store: SessionStore = new SessionStore();
   private agent: AgentRuntime | null = null;
@@ -428,10 +435,19 @@ struct Index {
 
       runId = agent.startRun({ sessionId: this.activeSessionId, input: prompt }).runId;
       if (abortAfterMs > 0) {
-        // 等它真的滴了几帧再停 —— 停得太早测的是"还没开始就取消"，不是"中途中断"。
-        setTimeout((): void => {
-          agent.abort(runId);
-        }, abortAfterMs);
+        // 等"至少滴了一帧"再停 —— 停得太早测的是"还没开始就取消"，不是"中途中断"。
+        // 设备忙时首帧可能晚于固定延迟，所以从 abortAfterMs 起轮询，最多再等 5s 兜底。
+        let retries = 25;
+        const abortOnce = (): void => {
+          if (settled) return;
+          if (tokenEvents > 0 || retries <= 0) {
+            agent.abort(runId);
+            return;
+          }
+          retries -= 1;
+          setTimeout(abortOnce, 200);
+        };
+        setTimeout(abortOnce, abortAfterMs);
       }
       setTimeout((): void => {
         if (settled) return;
@@ -465,7 +481,9 @@ struct Index {
         const fixture = JSON.parse(fx.body) as NavFixture;
         push(`fixture scenarios=${SELFCHECK_SCENARIO_KEYS.length}`);
         for (const key of SELFCHECK_SCENARIO_KEYS) {
-          const r = await this.navPromise(fixture.scenarios[key], key === 'abort' ? 260 : 0);
+          // abort 等 600ms：设备冷启动后首帧可能超过 260ms，停得太早测的是
+          // "还没开始就取消"，不是"中途中断"（断言本身仍是 frames >= 1）。
+          const r = await this.navPromise(fixture.scenarios[key], key === 'abort' ? 600 : 0);
           runs += 1;
           push(
             `run ${key} terminal=${r.terminal.length > 0 ? r.terminal : 'none'} count=${r.terminals} ` +
@@ -495,6 +513,33 @@ struct Index {
     }
     push(`DONE runs=${runs}`);
     this.navLines = lines;
+  }
+
+  /**
+   * 会话仓储一致性：同一份 core 用例（22 条）跑在鸿蒙 RDB 上。
+   *
+   * ⚠️ 与其它自检同一口径：这里**不判成功失败**，只把原始数字与失败用例名打出来。
+   *    判定归 `scripts/verify-ohos.mjs`。
+   */
+  private async runRepoCheck(): Promise<void> {
+    this.repoRunning = true;
+    this.repoLines = ['[SELFCHECK] repo running'];
+    const lines: string[] = [];
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const result = await runRepoConformance(context);
+      lines.push(
+        `[SELFCHECK] repo total=${result.total} passed=${result.passed} ` +
+          `failed=${result.failures.length} skipped=${result.skipped.length}`,
+      );
+      for (const failure of result.failures) {
+        lines.push(`[SELFCHECK] repoFail ${failure}`);
+      }
+    } catch (e) {
+      lines.push(`[SELFCHECK] repoError ${errorMessage(e)}`);
+    }
+    this.repoLines = lines;
+    this.repoRunning = false;
   }
 
   private addSession(): void {
@@ -542,6 +587,18 @@ struct Index {
               });
             })
           }
+          // 会话仓储一致性：22 条用例跑在 relationalStore 上。
+          // 放在这一屏（而不是下面的 ② 会话区）—— 截图与点击都只够得着首屏。
+          Row({ space: 8 }) {
+            Button('自检·仓储').fontSize(13).height(34).enabled(!this.repoRunning).onClick(() => {
+              this.runRepoCheck();
+            })
+            Text(this.repoRunning ? '跑 22 条用例…' : '同一份 core 用例，跑在 RDB 上')
+              .fontSize(11).fontColor(DIM).layoutWeight(1)
+          }.width('100%')
+          ForEach(this.repoLines, (line: string, index: number) => {
+            Text(line).fontSize(10).fontColor(ACCENT).width('100%')
+          }, (line: string, index: number) => `repo:${index}:${line}`)
           // 逐字流就画在这里 —— 抓拍时应当看到**半截**文本，那才是"逐字"
           Text(this.navStreamText.length === 0 ? '(尚未运行)' : this.navStreamText)
             .fontSize(12).fontColor(TEXT).width('100%')

@@ -71,7 +71,9 @@ export function parseSelfcheck(lines) {
 const EXPECT = [
   { key: 'normal', terminal: 'done', code: '-', minFrames: 2, msgHas: null, textEq: true },
   { key: 'silent-close', terminal: 'error', code: 'UPSTREAM', minFrames: 1, msgHas: '没收到 done 帧', textEq: false },
-  { key: 'killed', terminal: 'error', code: 'UPSTREAM', minFrames: 1, msgHas: '读取上游流失败', textEq: false },
+  // killed = 连接层失败（socket 被销毁），措辞与"干净 EOF"必须可区分：
+  // 一个是"没收到 done 帧"（流被截断），一个是"上游请求失败"（连接层抛错）。
+  { key: 'killed', terminal: 'error', code: 'UPSTREAM', minFrames: 1, msgHas: '上游请求失败', textEq: false },
   { key: 'upstream-error', terminal: 'error', code: 'UPSTREAM', minFrames: 1, msgHas: '上游报错', textEq: false },
   { key: 'abort', terminal: 'error', code: 'ABORTED', minFrames: 1, msgHas: null, textEq: false },
 ];
@@ -134,4 +136,70 @@ export function judgeSelfcheck(lines, expectedText) {
   push('对端 · 截断场景没发 done', !badDone, peer);
 
   return { verdicts, peer, parsed };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 会话仓储一致性（同一份 core 用例跑在 relationalStore 上）
+//
+// 应用侧格式（`Index.ets` 的 `runRepoCheck`）：
+//   `repo total=<n> passed=<n> failed=<n> skipped=<n>`
+//   `repoFail <用例名> —— <detail>`（每条失败一行）
+//   `repoError <异常>`（整个 harness 崩了才会有，此时连汇总行都没有）
+// ─────────────────────────────────────────────────────────────
+
+/** 解析仓储一致性报告。返回 `{ summary, failures, errors }`，summary 缺失 = 没跑起来。 */
+export function parseRepoReport(lines) {
+  let summary = null;
+  const failures = [];
+  const errors = [];
+  for (const raw of lines) {
+    const line = String(raw).replace(/^\[SELFCHECK\]\s*/, '');
+    if (line.startsWith('repo ')) {
+      const m = /^repo total=(\d+) passed=(\d+) failed=(\d+) skipped=(\d+)$/.exec(line);
+      if (m !== null) {
+        summary = {
+          total: Number(m[1]),
+          passed: Number(m[2]),
+          failed: Number(m[3]),
+          skipped: Number(m[4]),
+        };
+      }
+    } else if (line.startsWith('repoFail ')) {
+      failures.push(line.slice('repoFail '.length));
+    } else if (line.startsWith('repoError ')) {
+      errors.push(line.slice('repoError '.length));
+    }
+  }
+  return { summary, failures, errors };
+}
+
+/**
+ * 判定。
+ *
+ * `minCases` 必须由调用方从 core 的 `CONFORMANCE_CASE_COUNT` 取 —— 在这里写死一个
+ * 数字，加用例时它不会跟着长，而"用例被删空还全绿"正是这张卡要防的事。
+ */
+export function judgeRepo(lines, minCases) {
+  const verdicts = [];
+  const push = (name, ok, detail) => verdicts.push({ name, ok, detail });
+  const report = parseRepoReport(lines);
+  const s = report.summary;
+
+  if (s === null) {
+    push('仓储 · 报告存在', false, '没有 repo 汇总行 —— 用例没跑起来，或整体崩了');
+    return { verdicts, parsed: report };
+  }
+
+  push('仓储 · 报告存在', true, `total=${s.total} passed=${s.passed}`);
+  push('仓储 · 用例数没被删空', s.total >= minCases, `total=${s.total}（至少 ${minCases}）`);
+  push('仓储 · 全过', s.passed === s.total && s.failed === 0, `passed=${s.passed}/${s.total} failed=${s.failed}`);
+  push(
+    '仓储 · 失败行如实列出',
+    report.failures.length === s.failed,
+    `列出 ${report.failures.length} 行，计数 ${s.failed}`,
+  );
+  push('仓储 · 没有跳过的用例', s.skipped === 0, `skipped=${s.skipped}`);
+  push('仓储 · 无异常', report.errors.length === 0, report.errors.join(' | ') || '—');
+
+  return { verdicts, parsed: report };
 }
