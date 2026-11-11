@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>shell-ohos</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        var waiters = [];
+        window.__crossdeckPort = null;
+        window.addEventListener('message', function (ev) {
+          if (!ev.ports || ev.ports.length === 0) return;
+          window.__crossdeckPort = ev.ports[0];
+          for (var i = 0; i < waiters.length; i++) waiters[i](ev.ports[0]);
+          waiters.length = 0;
+        });
+        window.__whenPort = function (fn) {
+          if (window.__crossdeckPort) fn(window.__crossdeckPort);
+          else waiters.push(fn);
+        };
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

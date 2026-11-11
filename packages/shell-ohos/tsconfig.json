@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/types",
+    // ArkWeb 也是浏览器内核，lib 同 Web 壳：DOM.AsyncIterable 暂未用到但保持三端一致
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    // 试金石纪律同 Web 壳：页面代码不许有 node 全局类型；
+    // __APP_VERSION__ 与 window.__whenPort 在 src/global.d.ts 里自行声明
+    "types": [],
+    // 共享 UI 以源码形式被引用（exports 指 src），jsx 必须显式给出（TS6142）
+    "jsx": "react-jsx"
+  },
+  "include": ["src", "src-stub"],
+  "references": [{ "path": "../contract" }, { "path": "../core" }, { "path": "../ui" }]
+}

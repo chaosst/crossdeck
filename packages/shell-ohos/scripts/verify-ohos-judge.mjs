@@ -51,7 +51,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NAV_NORMAL_CHUNKS } from '../../../scripts/fake-navigate-upstream.mjs';
-import { judgeRepo, judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
+import { judgeRepo, judgeSelfcheck, judgeUiPage } from './parse-ohos-selfcheck.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE = join(HERE, 'parse-ohos-selfcheck.mjs');
@@ -299,7 +299,241 @@ for (const c of repoCases) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// 页面自检报告判定（P3：界面搬进 ArkWeb 之后的主判定）
+//
+// 报告格式逐字抄自 `src/selfcheck.ts` 的 `report(...)` + `AppHost.report()` 的分片方式：
+//   `[SELFCHECKPAGE] <i>/<n> <chunk>`，chunk 拼起来就是那份 JSON。
+// 这里故意把**hilog 前缀**也拼进去 —— 解析器要在整行里找 `[SELFCHECKPAGE]`，
+// 只喂裸分片就等于没测到真实输入形状。
+// ─────────────────────────────────────────────────────────────
+const pageReport = () => ({
+  shell: 'ohos-web',
+  ok: true,
+  failures: [],
+  probe: {
+    'bridge.systemInfoReachable': { platform: 'ohos', capabilities: ['fs.scope'] },
+    uiLoginGate: true,
+    uiGuestLoginClicked: true,
+    uiBootState: 'ready',
+    uiLoginPersisted: true,
+    uiSessionCount: { before: 0, after: 1 },
+    uiSessionCreateClicked: true,
+    uiSessionCreatedThroughUi: true,
+    uiSessionDelete: { gone: true, error: '' },
+    uiSessionRecreated: true,
+    uiNavFixtureReachable: 6,
+    uiChatInputPresent: true,
+    uiSendClicked: true,
+    uiStream: { streaming: true, stage: 'done', textLength: EXPECT_TEXT.length, expectedLen: EXPECT_TEXT.length },
+    uiSlowSendClicked: true,
+    uiTabSwitch: {
+      restarted: true,
+      firstChunk: true,
+      backOnChat: true,
+      lengthBeforeSwitch: 3,
+      lengthAfterSwitch: 13,
+      finalLen: EXPECT_TEXT.length,
+      expectedLen: EXPECT_TEXT.length,
+      finished: true,
+      stage: 'done',
+    },
+    uiGrantClicked: true,
+    uiEntryCount: 3,
+    uiTreeRendered: true,
+    uiEscapeClicked: true,
+    uiEscapeMessage: '[SCOPE_DENIED:ESCAPE] 路径不在任何已授权工作区之内',
+    uiFileEntryPresent: true,
+    uiUploadClicked: true,
+    uiUpload: { panel: true, stage: 'error', ratio: '1', error: '[FORBIDDEN] 当前身份没有上传权限（游客不能上传文档）' },
+    uiUploadDeniedForGuest: true,
+  },
+});
+
+const SENTINEL_LINE = '11-09 12:00:00.000  4321  4321 I A03200/WebShell: console: [selfcheck] DONE ok=true code=0';
+
+/** 与 `AppHost.report()` 同一分片规则（700 字符），行首带 hilog 前缀。 */
+function pageLines(report, { dropChunk = 0, dropSentinel = false } = {}) {
+  const json = JSON.stringify(report);
+  const CHUNK = 700;
+  const total = Math.max(1, Math.ceil(json.length / CHUNK));
+  const lines = [];
+  for (let i = 0; i < total; i += 1) {
+    if (i + 1 === dropChunk) continue;
+    const body = json.slice(i * CHUNK, (i + 1) * CHUNK);
+    lines.push(`11-09 12:00:0${i}.000  4321  4321 I A03200/HostBridge: [SELFCHECKPAGE] ${i + 1}/${total} ${body}`);
+  }
+  if (!dropSentinel) lines.push(SENTINEL_LINE);
+  return lines;
+}
+
+const mutReport = (fn) => (r) => {
+  const copy = JSON.parse(JSON.stringify(r));
+  fn(copy);
+  return copy;
+};
+
+const uiCases = [
+  { name: 'U0 基线：页面报告判定应全过', report: (r) => r, lines: {}, mustFail: [] },
+  {
+    name: 'U1 正文少一个字符（漏帧 / 跳字）',
+    report: mutReport((r) => {
+      r.probe.uiStream.textLength -= 1;
+    }),
+    lines: {},
+    mustFail: ['界面 · 聊天逐字到终态（长度相等）'],
+  },
+  {
+    name: 'U2 切页签时丢了最后几片（终长不等于全文）',
+    report: mutReport((r) => {
+      r.probe.uiTabSwitch.finalLen -= 5;
+    }),
+    lines: {},
+    mustFail: ['界面 · 切页签不丢帧'],
+  },
+  {
+    name: 'U3 哨兵行没出现（页面崩了 / 自检没跑完）',
+    report: (r) => r,
+    lines: { dropSentinel: true },
+    mustFail: ['界面 · 哨兵行'],
+  },
+  {
+    name: 'U4 报告缺一片（hilog 截断 / 分片丢）',
+    report: (r) => r,
+    lines: { dropChunk: 2 },
+    mustFail: ['界面 · 报告完整'],
+    note: '只看"能 parse"是不够的：缺中间一片时 JSON 必定 parse 失败，这条要挂在更早一步',
+  },
+  {
+    name: 'U5 有一条断言失败（应用如实上报）',
+    report: mutReport((r) => {
+      r.ok = false;
+      r.failures = ['ui.treeRendered'];
+    }),
+    lines: {},
+    mustFail: ['界面 · 断言无失败项', '界面 · 应用自评通过'],
+    note: '两条同时挂是设计使然：failures 非空也意味着 ok 该是 false',
+  },
+  {
+    name: 'U6 应用自评 false 但 failures 空（自相矛盾）',
+    report: mutReport((r) => {
+      r.ok = false;
+    }),
+    lines: {},
+    mustFail: ['界面 · 应用自评通过'],
+  },
+  {
+    name: 'U7 报告不是鸿蒙 WebView 壳报的（串了壳）',
+    report: mutReport((r) => {
+      r.shell = 'web';
+    }),
+    lines: {},
+    mustFail: ['界面 · 是鸿蒙 WebView 壳报的'],
+  },
+  {
+    name: 'U8 上传被拒的文案没到界面（403 没落到 UI）',
+    report: mutReport((r) => {
+      r.probe.uiUpload.error = '[UPSTREAM] 上传失败：HTTP 500';
+    }),
+    lines: {},
+    mustFail: ['界面 · 游客上传被上游 403 拒'],
+  },
+  {
+    name: 'U9 越界没被拒（fs-error 里没有 SCOPE_DENIED）',
+    report: mutReport((r) => {
+      r.probe.uiEscapeMessage = '';
+    }),
+    lines: {},
+    mustFail: ['界面 · 越界被拒（SCOPE_DENIED 可见）'],
+  },
+  {
+    name: 'U10 工作区树是空的（列目录没通）',
+    report: mutReport((r) => {
+      r.probe.uiEntryCount = 0;
+    }),
+    lines: {},
+    mustFail: ['界面 · 工作区树渲染出来了'],
+  },
+  {
+    name: 'U11 登录没落到凭据通道（只说明响应 200）',
+    report: mutReport((r) => {
+      r.probe.uiLoginPersisted = false;
+    }),
+    lines: {},
+    mustFail: ['界面 · 凭据真的进了端口'],
+  },
+  {
+    name: 'U12 删会话时弹出错误卡片（说明那行不在库里）',
+    report: mutReport((r) => {
+      r.probe.uiSessionDelete = { gone: true, error: '[NOT_FOUND] 会话不存在：s_1' };
+    }),
+    lines: {},
+    mustFail: ['界面 · 删除证明会话真落库'],
+  },
+  {
+    name: 'U13 probe 被删空（只剩一个空壳报告）',
+    report: mutReport((r) => {
+      r.probe = {};
+    }),
+    lines: {},
+    mustFail: [
+      '界面 · 断言项没被删空',
+      '界面 · 登录闸门出现过',
+      '界面 · 体验账号登录后到 ready',
+      '界面 · 凭据真的进了端口',
+      '界面 · 删除证明会话真落库',
+      '界面 · 聊天逐字到终态（长度相等）',
+      '界面 · 切页签不丢帧',
+      '界面 · 工作区树渲染出来了',
+      '界面 · 越界被拒（SCOPE_DENIED 可见）',
+      '界面 · 游客上传被上游 403 拒',
+    ],
+    note: '这条是"只看 ok 字段"最典型的假绿：报告形制完整但一张证据都没有 —— 挂一片是设计使然',
+  },
+];
+
+for (const c of uiCases) {
+  const lines = pageLines(c.report(pageReport()), c.lines);
+  const { verdicts } = judgeUiPage(lines, EXPECT_TEXT.length);
+  const failed = verdicts.filter((v) => !v.ok).map((v) => v.name).sort();
+  const ok = JSON.stringify(failed) === JSON.stringify([...c.mustFail].sort());
+  if (!ok) bad += 1;
+  console.log(`${ok ? '✅' : '❌'} ${c.name}`);
+  console.log(`     挂了 ${failed.length} 条：${failed.length === 0 ? '（无）' : failed.join(' | ')}`);
+  if (!ok) console.log(`     期望挂：${c.mustFail.length === 0 ? '（无）' : c.mustFail.join(' | ')}`);
+  if (c.note !== undefined) console.log(`     ⚠️ ${c.note}`);
+}
+
+// 反向：把"断言项没被删空"那条删掉，U13 必须**不再挂它**。
+// 只有这一步能证明 U13 里那一条是靠它杀掉的，而不是恰好别处也不同意。
+{
+  const anchor = /^\s*push\('界面 · 断言项没被删空'.*$/m;
+  const weakened = src.replace(anchor, '');
+  if (weakened === src) {
+    console.log('❌ U14 无法在判定层删掉"断言项没被删空" —— 锚点失配，变异没生效（别当成通过）');
+    bad += 1;
+  } else {
+    const mutPath = join(tmpdir(), `crossdeck-ohos-judge-ui-${process.pid}.mjs`);
+    writeFileSync(mutPath, weakened, 'utf8');
+    try {
+      const mutant = await import(pathToFileURL(mutPath).href);
+      const lines = pageLines(uiCases[13].report(pageReport()), uiCases[13].lines);
+      const { verdicts } = mutant.judgeUiPage(lines, EXPECT_TEXT.length);
+      const failed = verdicts.filter((v) => !v.ok).map((v) => v.name);
+      const survived = !failed.includes('界面 · 断言项没被删空');
+      console.log(`${survived ? '✅' : '❌'} U14 反向：拿掉"断言项没被删空"后，U13 必须不再挂它`);
+      console.log(`     挂了 ${failed.length} 条：${failed.length === 0 ? '（无）' : failed.join(' | ')}`);
+      if (!survived) {
+        console.log('     说明它被别的断言顺带覆盖了 —— 要重新想它到底测什么');
+        bad += 1;
+      }
+    } finally {
+      rmSync(mutPath, { force: true });
+    }
+  }
+}
+
 console.log('────────────────────────────────────────────────');
-console.log(`[ohos-judge] 共 ${cases.length + repoCases.length + 2} 例，异常 ${bad} 例`);
+console.log(`[ohos-judge] 共 ${cases.length + repoCases.length + uiCases.length + 3} 例，异常 ${bad} 例`);
 console.log(`[ohos-judge] DONE code=${bad === 0 ? 0 : 1}`);
 process.exit(bad === 0 ? 0 : 1);

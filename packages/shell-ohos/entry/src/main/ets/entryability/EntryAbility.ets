@@ -1,15 +1,26 @@
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want, errorManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { rememberWindowStage } from '../host/AppHost';
 
 const DOMAIN: number = 0x3200;
 const TAG: string = 'crossdeck';
 
-/** 自检配置通道用到的 key。页面侧用 `@StorageLink` 读同一批 key。 */
-const SELFCHECK_PARAMS: string[] = ['upstreamUrl', 'ohosToken'];
+/** 自检配置通道用到的 key。页面侧用 `@StorageLink` / `AppStorage.get` 读同一批 key。 */
+const SELFCHECK_PARAMS: string[] = ['upstreamUrl', 'ohosToken', 'selfcheck', 'ui'];
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    errorManager.on('error', {
+      onUnhandledException(errMsg: string): void {
+        hilog.error(DOMAIN, TAG, '未捕获异常：%{public}s', errMsg);
+      },
+    });
+    errorManager.on('unhandledRejection', (reason: ESObject): void => {
+      const err = reason instanceof Error ? reason : new Error(String(reason));
+      hilog.error(DOMAIN, TAG, '未处理的 Promise 拒绝：%{public}s | 堆栈 %{public}s',
+        err.message, err.stack ?? '无');
+    });
     // ─────────────────────────────────────────────────────────────
     // 自检配置通道：`aa start -a EntryAbility -b <bundle> --ps upstreamUrl … --ps ohosToken …`
     //
@@ -40,12 +51,25 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    windowStage.loadContent('pages/Index', (err) => {
+    // 端口在页面里建，WindowStage 只有这里拿得到 —— 先记一笔再加载页面。
+    rememberWindowStage(windowStage);
+    windowStage.loadContent(this.entryPage(), (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'loadContent failed: %{public}s', JSON.stringify(err) ?? '');
         return;
       }
       hilog.info(DOMAIN, TAG, 'loadContent ok');
     });
+  }
+
+  /**
+   * `--ps ui web`（默认）= 共享 UI 容器页；`--ps ui arkui` = 旧的 ArkUI 原生页。
+   *
+   * 原生页留着不是情怀：它是"没有 WebView 时也能自证 core/RDB"的兜底
+   * （`verify-ohos --legacy` 走的就是它）。
+   */
+  private entryPage(): string {
+    const ui: string = AppStorage.get<string>('ui') ?? '';
+    return ui === 'arkui' ? 'pages/Index' : 'pages/WebShell';
   }
 }

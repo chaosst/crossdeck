@@ -35,6 +35,19 @@
  * 帧解析 / 映射的细粒度断言仍然只在 `scripts/verify-core-sse.mjs`，
  * 这里**不抄第三套**（三套漂移比一套没有更糟）。
  *
+ * ## 两条链路（P3 之后默认走新版）
+ *
+ * | | 主链路（默认） | `--legacy` |
+ * |---|---|---|
+ * | 界面 | `pages/WebShell`（ArkWeb 承载共享 UI） | `pages/Index`（ArkUI 原生页） |
+ * | 点击 | 页面内 `data-testid`（`runUiProbe`） | `dumpLayout` + `uinput` 按坐标点 |
+ * | 读结论 | `hdc shell hilog -x`（`[SELFCHECKPAGE]` 分片 + `[SELFCHECK] repo`） | UI 树上的文本行 |
+ *
+ * 为什么主链路必须换测量手段：ArkWeb 在 UI 树里只是**一个 Web 节点**，
+ * 点不到 DOM 子控件（`dumpLayout` 看不到 React 的 DOM）。旧的点击流程对主界面
+ * 直接失效，所以自检搬进了页面，设备侧只负责 grep + 判定。
+ * 原生页留着是因为它是"没有 WebView 也能自证 core/RDB"的兜底。
+ *
  * ## 应用不自己宣布成功
  *
  * 模拟器里的自检只把观察到的**原始数字**打出来（`[SELFCHECK]` 前缀），判定留在这里。
@@ -70,7 +83,7 @@ import {
   createFakeNavigateUpstream,
 } from '../../../scripts/fake-navigate-upstream.mjs';
 // 判定层抽成纯函数：它能在**没有真机**时被合成行驱动（见该文件头部）。
-import { judgeRepo, judgeSelfcheck } from './parse-ohos-selfcheck.mjs';
+import { judgeRepo, judgeSelfcheck, judgeUiPage } from './parse-ohos-selfcheck.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = join(HERE, '..');
@@ -86,6 +99,8 @@ const JBR_BIN = `${DEVECO}/jbr/bin`;
 const HDC = `${DEVECO}/sdk/default/openharmony/toolchains/hdc.exe`;
 const BUNDLE = 'site.crossdeck.app';
 const ABILITY = 'EntryAbility';
+/** `--legacy` = 旧的 ArkUI 原生页链路（`--ps ui arkui` + `dumpLayout` 点控件）。 */
+const LEGACY = process.argv.includes('--legacy');
 
 const evidence = { ranAt: new Date().toISOString(), tool: 'verify-ohos', steps: [], failures: [] };
 let failed = false;
@@ -454,14 +469,18 @@ if (!rportOk) {
 
 mkdirSync(SHOTS, { recursive: true });
 
-// ─────────────────────────────────────────────────────────────
-// ⑦ 第一趟：**不带配置**启动 —— 与历史证据完全同一条路（脚本上游）。
-//
-// 为什么仍要跑这一趟：自检面板只在配了上游时出现，而它会把 ③ 节挤到屏幕外，
-// 「带工具」那一步就点不到了。这一趟保证**工具链路的截图没有因为 T14 而丢**。
-// ─────────────────────────────────────────────────────────────
-hdc(['shell', `aa force-stop ${BUNDLE}`]);
-const startDemo = hdc(['shell', `aa start -a ${ABILITY} -b ${BUNDLE}`]);
+const EXPECT_TEXT = NAV_NORMAL_CHUNKS.join('');
+let midText = '';
+
+if (LEGACY) {
+  // ─────────────────────────────────────────────────────────────
+  // ⑦L 第一趟：**不带配置**启动 —— 与历史证据完全同一条路（脚本上游）。
+  //
+  // 为什么仍要跑这一趟：自检面板只在配了上游时出现，而它会把 ③ 节挤到屏幕外，
+  // 「带工具」那一步就点不到了。这一趟保证**工具链路的截图没有因为 T14 而丢**。
+  // ─────────────────────────────────────────────────────────────
+  hdc(['shell', `aa force-stop ${BUNDLE}`]);
+  const startDemo = hdc(['shell', `aa start -a ${ABILITY} -b ${BUNDLE} --ps ui arkui`]);
 const demoOk = (startDemo.stdout ?? '').includes('start ability successfully');
 record('aa start（演示形态，脚本上游）', demoOk, demoOk ? 'start ability successfully' : (startDemo.stdout ?? '').slice(-200));
 await sleep(6000);
@@ -482,7 +501,7 @@ await clickAndShot('带工具', 'ohos-shell-tool');
 hdc(['shell', `aa force-stop ${BUNDLE}`]);
 const startNav = hdc([
   'shell',
-  `aa start -a ${ABILITY} -b ${BUNDLE} --ps upstreamUrl ${deviceBase} --ps ohosToken ${TOKEN}`,
+  `aa start -a ${ABILITY} -b ${BUNDLE} --ps ui arkui --ps upstreamUrl ${deviceBase} --ps ohosToken ${TOKEN}`,
 ]);
 const navStartOk = (startNav.stdout ?? '').includes('start ability successfully');
 record('aa start（--ps 配置通道）', navStartOk, navStartOk ? deviceBase : (startNav.stdout ?? '').slice(-200));
@@ -500,10 +519,8 @@ record('截图 · 自检面板（首屏）', panel.ok, panel.detail);
 // 判定不是"截图文件存在"（那证明不了逐字），而是：
 // UI 树上出现了**最终文本的一个真前缀**且更短 —— 那才是"逐字流"的定义。
 // ─────────────────────────────────────────────────────────────
-const EXPECT_TEXT = NAV_NORMAL_CHUNKS.join('');
-let midText = '';
-{
-  const found = centerOf('自检·慢流');
+  {
+    const found = centerOf('自检·慢流');
   if (found.center === undefined) {
     record('点击「自检·慢流」', false, `${found.error} —— 拒绝静默跳过`);
   } else {
@@ -617,7 +634,99 @@ await sleep(6000);
     for (const v of judged.verdicts) record(v.name, v.ok, v.detail);
   }
 }
+} else {
+  // ─────────────────────────────────────────────────────────────
+  // ⑦ 主链路：**共享 UI 装进 ArkWeb**（P3 之后这是产品形态）
+  //
+  // 与旧链路的根本差别：界面在 WebView 里，`dumpLayout` 只能看到一个 `Web` 节点 ——
+  // 点不到 DOM 子控件。所以**点击与断言都搬进页面**（`@crossdeck/ui` 的 `runUiProbe`），
+  // 设备侧只做三件事：起（`--ps selfcheck 1`）→ 读 hilog → 判定。
+  //
+  // 只起一趟：自检自己会走完"登录 → 建会话 → 删会话 → 聊天 → 切页签 →
+  // 授权目录 → 越界 → 上传被拒"，整条业务链一次覆盖。
+  // ─────────────────────────────────────────────────────────────
+  const bundleIndex = join(PKG, 'entry', 'src', 'main', 'resources', 'rawfile', 'app', 'index.html');
+  if (!existsSync(bundleIndex)) {
+    console.error(`❌ 缺少 ${bundleIndex} —— 先跑 \`pnpm build:ohos-web\``);
+    console.error('   产物不入库（gitignore）；少了它应用会**白屏而不是构建失败**。');
+    evidence.skipped = 'ohos-bundle-missing';
+    writeFileSync(join(EVIDENCE, 'ohos-selfcheck.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+    process.exit(2);
+  }
+  record('共享 UI 产物', true, `${(readFileSync(bundleIndex).length / 1024).toFixed(1)} KB index.html`);
 
+  /**
+   * 读设备侧 hilog。
+   *
+   * 先 `hilog -r` 清缓冲再起应用 —— 不清的话"上一轮的 DONE 行"会被当成本轮的结论，
+   * 而症状是**看起来每次都通过**。
+   */
+  const readHilog = () => (hdc(['shell', 'hilog -x']).stdout ?? '').split('\n');
+
+  /** 有界等待：等某类行出现，别靠"睡够久应该就好了"。 */
+  const waitHilog = async (needle, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let out = readHilog();
+    while (Date.now() < deadline) {
+      if (out.some((l) => l.includes(needle))) return out;
+      await sleep(3000);
+      out = readHilog();
+    }
+    return out;
+  };
+
+  hdc(['shell', `aa force-stop ${BUNDLE}`]);
+  hdc(['shell', 'hilog -r']);
+  const startWeb = hdc([
+    'shell',
+    `aa start -a ${ABILITY} -b ${BUNDLE} --ps ui web --ps upstreamUrl ${deviceBase} --ps selfcheck 1`,
+  ]);
+  const webStartOk = (startWeb.stdout ?? '').includes('start ability successfully');
+  record('aa start（WebView + 自检）', webStartOk, webStartOk ? deviceBase : (startWeb.stdout ?? '').slice(-200));
+
+  // 页面自检跑完整条业务链（最慢的一步是 20s 的流式收尾）。
+  // 「端口已投递」必须**先等**：等完 DONE 再回头查，那行早被 hilog 缓冲轮转冲掉了。
+  const portLines = await waitHilog('端口已投递', 60000);
+  const portDelivered = portLines.some((l) => l.includes('端口已投递'));
+  record(
+    '桥接 · 端口投递到页面',
+    portDelivered,
+    portDelivered ? 'WebMessagePort 已交付' : 'hilog 里没有「端口已投递」—— 多半是白屏',
+  );
+
+  let lines = await waitHilog('[selfcheck] DONE', 180000);
+
+  const pageShot = shot('ohos-shell-web');
+  record('截图 · 共享 UI', pageShot.ok, pageShot.detail);
+
+  // 仓储一致性由端口在投递后自己跑（22 条用例、独立库），与页面自检并行。
+  lines = await waitHilog('repo total=', 90000);
+  evidence.hilogLines = lines.filter((l) => l.includes('[SELFCHECK'));
+
+  // hdc 输出行尾是 \r\n：不剥掉，\r 会混进拼接文本（JSON 报 control character）
+  // 和 `$` 锚定的正则（repo 汇总行永远解析失败）。判定只吃 `[SELFCHECK…]` 之后的净内容。
+  // 哨兵行是小写 `[selfcheck]`，整行保留（parsePageSentinel 自己按正则捞）。
+  const appLines = lines
+    .filter((l) => l.includes('[SELFCHECK') || l.includes('[selfcheck] DONE'))
+    .map((l) => l.replace(/\r$/, ''));
+  const uiJudged = judgeUiPage(appLines, EXPECT_TEXT.length);
+  evidence.uiVerdicts = uiJudged.verdicts;
+  evidence.pageReport = uiJudged.report;
+  for (const v of uiJudged.verdicts) record(v.name, v.ok, v.detail);
+
+  const repoJudged = judgeRepo(
+    lines
+      .filter((l) => l.includes('[SELFCHECK] '))
+      .map((l) => l.slice(l.indexOf('[SELFCHECK] ')).replace(/\r$/, '')),
+    core.CONFORMANCE_CASE_COUNT,
+  );
+  evidence.repoVerdicts = repoJudged.verdicts;
+  for (const v of repoJudged.verdicts) record(v.name, v.ok, v.detail);
+
+  writeFileSync(join(EVIDENCE, 'ohos-hilog.txt'), `${lines.join('\n')}\n`, 'utf8');
+}
+
+// ─────────────────────────────────────────────────────────────
 // ⑫ 收尾 + 归档
 try {
   // ⚠️ 删除用的是 `hdc fport rm <taskstring>`，不是 `hdc rport rm` ——
@@ -641,16 +750,20 @@ evidence.upstream = {
   expectedText: EXPECT_TEXT,
   midStreamText: midText,
 };
-evidence.screenshots = [
-  'ohos-shell.jpg',
-  'ohos-shell-stream.jpg',
-  'ohos-shell-tool.jpg',
-  'ohos-shell-selfcheck-boot.jpg',
-  'ohos-shell-selfcheck-midstream.jpg',
-  'ohos-shell-selfcheck-done.jpg',
-  'ohos-shell-selfcheck-verdict.jpg',
-  'ohos-shell-selfcheck-repo.jpg',
-];
+evidence.chain = LEGACY ? 'legacy-arkui' : 'arkweb-webview';
+evidence.screenshots = LEGACY
+  ? [
+      'ohos-shell.jpg',
+      'ohos-shell-stream.jpg',
+      'ohos-shell-tool.jpg',
+      'ohos-shell-selfcheck-boot.jpg',
+      'ohos-shell-selfcheck-midstream.jpg',
+      'ohos-shell-selfcheck-done.jpg',
+      'ohos-shell-selfcheck-verdict.jpg',
+      'ohos-shell-selfcheck-repo.jpg',
+    ]
+  : ['ohos-shell-web.jpg'];
+if (!LEGACY) delete evidence.upstream.midStreamText;
 writeFileSync(join(EVIDENCE, 'ohos-selfcheck.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 
 console.log('────────────────────────────────────────────────');

@@ -6,3 +6,5 @@
 
 export { mountApp } from './mount';
 export type { MountOptions } from './mount';
+export { runUiProbe, probeUiHarness } from './selfcheck/probeUi';
+export type { UiCheck, UiFixture, ProbeUiDeps } from './selfcheck/probeUi';

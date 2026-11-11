@@ -62,3 +62,14 @@ packages/shell-ohos/entry/src/main/ets/shared/core/
 # 鸿蒙验证脚本的临时产物：hdc shell uitest dumpLayout 拉回来的 UI 树，
 # 用来算控件的真实 bounds（见 packages/shell-ohos/scripts/verify-ohos.mjs）。
 .ohos-layout.json
+
+# 鸿蒙页面 bundle 与浏览器桩的构建产物（verify:ohos-bundle 重建）。
+# rawfile/app 不入库：首次 clone 后必须先 build:ohos-web，否则 $rawfile 白屏。
+packages/shell-ohos/entry/src/main/resources/rawfile/app/
+packages/shell-ohos/dist-stub/
+
+# src-stub 里 tsc 的游离产物（vite 从 .ts 现编，运行时只吃 dist-stub）
+packages/shell-ohos/src-stub/*.js
+packages/shell-ohos/src-stub/*.js.map
+packages/shell-ohos/src-stub/*.d.ts
+packages/shell-ohos/src-stub/*.d.ts.map

@@ -19,6 +19,10 @@
     "build:web": "pnpm --filter @crossdeck/shell-web build",
     "dev:web": "pnpm --filter @crossdeck/shell-web dev",
     "selfcheck:web": "pnpm --filter @crossdeck/shell-web build && node packages/shell-web/scripts/web-selfcheck.mjs",
+    "build:ohos-web": "pnpm --filter @crossdeck/shell-ohos build:web",
+    "build:ohos-stub": "pnpm --filter @crossdeck/shell-ohos build:stub",
+    "verify:ohos-bundle": "pnpm build:ohos-web && pnpm build:ohos-stub && node packages/shell-ohos/scripts/verify-ohos-bundle.mjs",
+    "selfcheck:ohos-bundle": "node packages/shell-ohos/scripts/ohos-bundle-selfcheck.mjs",
     "typecheck": "tsc -b",
     "typecheck:clean": "tsc -b --clean",
     "lint": "eslint .",
@@ -47,6 +51,7 @@
     "verify:update-feed": "pnpm --filter @crossdeck/shell-electron verify:update-feed",
     "sync:ohos": "node packages/shell-ohos/scripts/sync-shared.mjs",
     "verify:ohos": "node packages/shell-ohos/scripts/verify-ohos.mjs",
+    "verify:ohos:legacy": "node packages/shell-ohos/scripts/verify-ohos.mjs --legacy",
     "verify:upload": "node scripts/verify-core-upload.mjs",
     "verify:upload-client": "node scripts/verify-upload-client.mjs"
   },

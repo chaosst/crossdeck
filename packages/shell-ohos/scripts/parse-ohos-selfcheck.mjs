@@ -203,3 +203,155 @@ export function judgeRepo(lines, minCases) {
 
   return { verdicts, parsed: report };
 }
+
+// ─────────────────────────────────────────────────────────────
+// 页面内自检报告（P3：界面搬进 ArkWeb 之后的主判定）
+//
+// 为什么另起一套：`dumpLayout` 在 ArkWeb 里只能看到**一个 Web 节点**，
+// 点不到 DOM 子控件 —— 点击与断言都必须在页面里做（`@crossdeck/ui` 的 `runUiProbe`）。
+// 应用侧于是只负责把结果**原样**打出来，判定仍在这里：
+//   `[SELFCHECKPAGE] <i>/<n> <chunk>`   ← `AppHost.report()` 按 700 字符分片
+//   `[selfcheck] DONE ok=<b> code=<n>`  ← 页面哨兵行（经 onConsole 进 hilog）
+//
+// ⚠️ 分片必须带序号：hilog 对单条有长度上限，超长会被截断；按序号拼回原文，
+//    截断就会表现为「拼不齐 → 判红」，而不是「JSON 恰好还能解析 → 假绿」。
+// ─────────────────────────────────────────────────────────────
+
+/** 页面报告里**必须出现**的断言键 —— 少一个就说明驱动器根本没走到那一步。 */
+const UI_REQUIRED_PROBES = [
+  'uiLoginGate',
+  'uiBootState',
+  'uiLoginPersisted',
+  'uiSessionCount',
+  'uiSessionDelete',
+  'uiSessionRecreated',
+  'uiStream',
+  'uiTabSwitch',
+  'uiEntryCount',
+  'uiEscapeMessage',
+  'uiUpload',
+];
+
+/**
+ * 把 `[SELFCHECKPAGE] i/n` 分片拼回 JSON 文本。
+ * 返回 `{ text, chunks, total, complete, error }`。
+ */
+export function parsePageChunks(lines) {
+  const parts = new Map();
+  let total = 0;
+  for (const raw of lines) {
+    const line = String(raw);
+    const at = line.indexOf('[SELFCHECKPAGE]');
+    if (at < 0) continue;
+    const m = /^\[SELFCHECKPAGE\]\s*(\d+)\/(\d+)\s([\s\S]*)$/.exec(line.slice(at));
+    if (m === null) continue;
+    const idx = Number(m[1]);
+    total = Number(m[2]);
+    // 同一序号可能被重复打印（hilog 缓冲区里有旧行）—— 以第一份为准。
+    if (!parts.has(idx)) parts.set(idx, m[3]);
+  }
+  const chunks = [...parts.entries()].sort((a, b) => a[0] - b[0]);
+  const missing = [];
+  for (let i = 1; i <= total; i += 1) if (!parts.has(i)) missing.push(i);
+  const text = chunks.map(([, v]) => v).join('');
+  if (total === 0) return { text: '', chunks: 0, total: 0, complete: false, error: '没有 SELFCHECKPAGE 分片' };
+  if (missing.length > 0) {
+    return { text, chunks: parts.size, total, complete: false, error: `缺分片 ${missing.join(',')}` };
+  }
+  return { text, chunks: parts.size, total, complete: true, error: null };
+}
+
+/** 从 hilog 行里找页面哨兵。返回 `{ ok, code, raw }` 或 `null`。 */
+export function parsePageSentinel(lines) {
+  for (const raw of lines) {
+    const m = /\[selfcheck\] DONE ok=(true|false) code=(\d+)/.exec(String(raw));
+    if (m !== null) return { ok: m[1] === 'true', code: Number(m[2]), raw: m[0] };
+  }
+  return null;
+}
+
+/**
+ * 判定页面自检报告。
+ *
+ * `expectedLen` = 上游完整答案的字符数（`NAV_NORMAL_CHUNKS.join('')` 的长度）。
+ * 正文长度必须**相等**而不是 >0：少一片也算通的话，这条断言就测不出漏帧。
+ */
+export function judgeUiPage(lines, expectedLen) {
+  const verdicts = [];
+  const push = (name, ok, detail) => verdicts.push({ name, ok, detail });
+
+  const sentinel = parsePageSentinel(lines);
+  push('界面 · 哨兵行', sentinel !== null && sentinel.code === 0, sentinel === null ? '没看到 [selfcheck] DONE' : sentinel.raw);
+
+  const chunks = parsePageChunks(lines);
+  if (!chunks.complete) {
+    push('界面 · 报告完整', false, chunks.error ?? '分片不全');
+    return { verdicts, report: null, sentinel };
+  }
+  push('界面 · 报告完整', true, `${chunks.chunks}/${chunks.total} 片，${chunks.text.length} 字符`);
+
+  let report = null;
+  try {
+    report = JSON.parse(chunks.text);
+  } catch (err) {
+    push('界面 · 报告是合法 JSON', false, `${String(err.message).slice(0, 160)}｜头部 ${JSON.stringify(chunks.text.slice(0, 80))}`);
+    return { verdicts, report: null, sentinel };
+  }
+  push('界面 · 报告是合法 JSON', true, `${Object.keys(report ?? {}).join(',')}`);
+
+  push('界面 · 是鸿蒙 WebView 壳报的', report.shell === 'ohos-web', String(report.shell));
+  const failures = Array.isArray(report.failures) ? report.failures : null;
+  push('界面 · 断言无失败项', failures !== null && failures.length === 0, failures === null ? 'failures 字段缺失' : failures.join(' | ') || '—');
+  push('界面 · 应用自评通过', report.ok === true, String(report.ok));
+
+  const probe = report.probe ?? {};
+  const missing = UI_REQUIRED_PROBES.filter((k) => !(k in probe));
+  push('界面 · 断言项没被删空', missing.length === 0, missing.length === 0 ? `${Object.keys(probe).length} 项` : `缺 ${missing.join(',')}`);
+
+  // 以下每一条都是"某一步真的发生了什么"的具体证据 —— 只信 ok 字段等于只信应用的自述。
+  push('界面 · 登录闸门出现过', probe.uiLoginGate === true, JSON.stringify(probe.uiLoginGate));
+  push('界面 · 体验账号登录后到 ready', probe.uiBootState === 'ready', JSON.stringify(probe.uiBootState));
+  push('界面 · 凭据真的进了端口', probe.uiLoginPersisted === true, JSON.stringify(probe.uiLoginPersisted));
+
+  const del = probe.uiSessionDelete ?? {};
+  push(
+    '界面 · 删除证明会话真落库',
+    del.gone === true && del.error === '',
+    JSON.stringify(del),
+  );
+
+  const stream = probe.uiStream ?? {};
+  push(
+    '界面 · 聊天逐字到终态（长度相等）',
+    stream.streaming === true && stream.stage === 'done' && stream.textLength === expectedLen,
+    `stage=${stream.stage} len=${stream.textLength}（期望 ${expectedLen}）`,
+  );
+
+  const tab = probe.uiTabSwitch ?? {};
+  push(
+    '界面 · 切页签不丢帧',
+    tab.finished === true &&
+      tab.stage === 'done' &&
+      tab.lengthBeforeSwitch > 0 &&
+      tab.lengthBeforeSwitch < expectedLen &&
+      tab.lengthAfterSwitch > tab.lengthBeforeSwitch &&
+      tab.finalLen === expectedLen,
+    `切走 ${tab.lengthBeforeSwitch} → 切回 ${tab.lengthAfterSwitch} → 终 ${tab.finalLen}（期望 ${expectedLen}）`,
+  );
+
+  push('界面 · 工作区树渲染出来了', Number(probe.uiEntryCount) > 0, `entries=${probe.uiEntryCount}`);
+  push(
+    '界面 · 越界被拒（SCOPE_DENIED 可见）',
+    String(probe.uiEscapeMessage ?? '').includes('SCOPE_DENIED'),
+    JSON.stringify(String(probe.uiEscapeMessage ?? '').slice(0, 120)),
+  );
+
+  const up = probe.uiUpload ?? {};
+  push(
+    '界面 · 游客上传被上游 403 拒',
+    up.stage === 'error' && String(up.error ?? '').includes('没有上传权限'),
+    `stage=${up.stage} error=${JSON.stringify(String(up.error ?? '').slice(0, 120))}`,
+  );
+
+  return { verdicts, report, sentinel };
+}

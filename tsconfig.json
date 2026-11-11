@@ -5,6 +5,7 @@
     { "path": "packages/core" },
     { "path": "packages/ui" },
     { "path": "packages/shell-electron" },
-    { "path": "packages/shell-web" }
+    { "path": "packages/shell-web" },
+    { "path": "packages/shell-ohos" }
   ]
 }

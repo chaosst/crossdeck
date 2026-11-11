@@ -120,7 +120,15 @@ const linterOptions = { noInlineConfig: true, reportUnusedDisableDirectives: 'er
 
 export default [
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/*.d.ts', 'docs/**', '**/.trash/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/*.d.ts',
+      'docs/**',
+      '**/.trash/**',
+      // ArkTS 编译产物（hvigor 把 .ets 转成的 .ts）：不是源码，lint 它只会报一堆生成代码的噪音。
+      'packages/shell-ohos/entry/build/**',
+    ],
   },
 
   // ── 基础层 ────────────────────────────────────────────────

@@ -20,3 +20,4 @@ export * from './update.js';
 export * from './perf.js';
 export * from './navigate.js';
 export * from './error.js';
+export * from './portFrame.js';

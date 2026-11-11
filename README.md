@@ -40,9 +40,12 @@ TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台�
   收益不是"看起来优雅"，而是背压可以**逐帧确定性验证** —— 83 条断言、全程 0ms 真实等待
 - **第二个真壳，不是"顺手也做一个"**：`shell-ohos` 是 ArkTS（DevEco）工程，
   与 Electron **非同族**，跑的是**同一份** contract/core 源码
-  （构建期同步，不维护第二份副本），UI 换成 ArkUI、能力端口换成 `@ohos.*`。
+  （构建期同步，不维护第二份副本）。界面用 **ArkWeb 承载同一份共享 UI**（`@crossdeck/ui`），
+  ArkTS 只实现 9 个**端口**（system/session/agent/workspace/document/navigate/action/shell/selfcheck），
+  29 条通道的映射在页面 JS 里 —— 业务编排归 JS、系统调用归 ArkTS。
   Electron 壳证明得了架构，但证明不了**可移植** ——
   除非真有一个非同族的壳编译过、装上、跑起来、并且有截图
+  （旧的 ArkUI 原生页保留为 `--ps ui=arkui`，是"没有 WebView 也能自证 core/RDB"的兜底）
 
 ---
 
@@ -693,11 +696,20 @@ scripts/
 docs/evidence/               # 自检报告与截图（可核验产物）
 ```
 
-`packages/shell-ohos` **刻意不是 pnpm workspace 成员**：它是 DevEco 工程，
-清单文件是 `oh-package.json5`，依赖走 `ohpm` 而不是 npm。
-给它补一个 `package.json` 只会制造"双清单"的歧义 ——
-读者会以为它是能被 `pnpm --filter @crossdeck/shell-ohos` 操作的 JS 包。
-所以根 `package.json` 直接指向它的脚本路径，而不是走 `--filter`。
+`packages/shell-ohos` **两份清单，一个目录**：
+
+- `oh-package.json5` —— DevEco 工程的清单，依赖走 `ohpm`，出的是 HAP；
+- `package.json` —— 页面 bundle 的清单（Vite + React），依赖走 npm，产物是
+  `entry/src/main/resources/rawfile/app/`（**不入库**，见 `.gitignore`）。
+
+第二份是 P3 才加的：共享 UI 要装进 ArkWeb，就得有一个能被 Vite 打的入口。
+它同时让 `shell-ohos` 成为 pnpm workspace 成员（`pnpm --filter @crossdeck/shell-ohos build:web`），
+但**只负责页面 bundle**，不参与 HAP 构建 —— HAP 仍然只认 `hvigorw`。
+
+由此产生**两份产物、一份源码**：`shared/core` 是给 ArkTS VM 编译的 `.ts` 副本，
+`rawfile/app/*.js` 是 core 被 Vite 打进 WebView 的第二份编译结果。
+`verify:shared-fresh` 只管前者的漂移；后者由 `verify:ohos-bundle` 用
+"必须含有 UI 锚点/协议字面量"来证伪 —— 否则 `emptyOutDir` 产出一个空壳也算"构建成功"。
 
 `shared/contract/` 与 `shared/core/` **不进版本库**（见 `.gitignore`）：
 它们是 `pnpm sync:ohos` 的产物，事实源是 `packages/contract` 与 `packages/core`。

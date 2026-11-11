@@ -177,6 +177,18 @@ export function isIpcErrorCode(value: string): value is IpcErrorCode {
   return (KNOWN_CODES as readonly string[]).includes(value);
 }
 
+/**
+ * 直接把三要素编码成信封原文 —— ArkTS 端口层与 Web 壳 host 共用的那一个出口。
+ *
+ * 端口层没有 Error 对象可抛（ArkTS 侧 BusinessError 不是 Error 实例），
+ * 它手里的就是 `(code, message, detail)` 三样，所以编码函数吃三要素而不是 err。
+ * 与 `parseIpcError` 配对：encode → decode round-trip 三项一致（verify:contract 断言）。
+ */
+export function formatIpcError(code: IpcErrorCode, message: string, detail?: string): string {
+  return detail === undefined ? `[${code}] ${message}` : `[${code}:${detail}] ${message}`;
+}
+
+
 /** 把任意错误编码成可穿过 contextBridge 的 Error。 */
 export function encodeBridgeError(err: unknown): Error {
   const serialized = toSerializedError(err);
