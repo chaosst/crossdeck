@@ -4,11 +4,11 @@
 > One platform-agnostic core, multiple shells.
 
 `crossdeck` 是一个跨端 Agent 桌面客户端的架构示范：把 Agent 运行时抽成**零平台依赖**的
-TypeScript 包，再用 Electron / Web / HarmonyOS 三个壳各自注入平台能力。
+TypeScript 包，再用 Windows（Electron）/ Web / 鸿蒙 PC（2in1）三个壳各自注入平台能力。
 
 它要回答的是一个工程问题，而不是一个产品问题：
 
-> **同一个内核，怎么在浏览器、桌面端、鸿蒙端上跑，且边界清晰、降级可控、类型安全？**
+> **同一个内核，怎么在浏览器、Windows 桌面端、鸿蒙 PC 端上跑，且边界清晰、降级可控、类型安全？**
 
 ---
 
@@ -66,7 +66,7 @@ pnpm pack:win     # 打 Windows NSIS 安装包（约 98MB）
 pnpm verify:update-feed  # 用本地真实 feed 在打包产物上跑通更新链路（须先 pack:win）
 pnpm build:ohos-web      # 打鸿蒙壳要装进 rawfile 的页面 bundle（共享 UI）
 pnpm verify:ohos-bundle  # 校验页面 bundle + 端口桩产物（含空壳反例）
-pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 页面自检 → 判定 → 截图（需 DevEco + 模拟器在线）
+pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 页面自检 → 判定 → 截图（需 DevEco + 鸿蒙 PC 模拟器在线）
 ```
 
 ### 各命令实际做了什么
@@ -163,7 +163,7 @@ pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 页面
 一条命令走完全链路：同步源码 → `hvigorw assembleHap` → `hdc install` →
 起假上游 + `hdc rport` → `aa start` → 页面内自检 → 从 hilog 收割报告 → 判定 → 截图归档。
 
-下面是**真实设备（phone 模拟器）跑通那一次**的输出（数字每次会变，HAP 体积随页面 bundle 浮动）：
+下面是**真实设备（鸿蒙 PC 模拟器，2in1 形态）跑通那一次**的输出（数字每次会变，HAP 体积随页面 bundle 浮动）：
 
 ```
 ✅ 工具链                        DevEco @ D:/software/DevEco Studio
@@ -212,8 +212,8 @@ pnpm verify:ohos  # 鸿蒙壳端到端：编译 → 安装 → 启动 → 页面
 截图证据在 `docs/screenshots/`。UI 里跑的都是**同一份** core：会话与消息走
 core 的 `SessionRepository` 规格 + 本地 RDB 后端，流式来自 `core/agent/runtime` +
 `core/events/streamBus`，能力表来自 `shared/ports.ets` 的运行时探测
-（`deviceInfo.deviceType` 读出来是 `phone`，所以 `window.multi` 显示「—」，
-UI 据此少渲染一块 —— 这是设计结果，不是降级事故）。
+（`deviceInfo.deviceType` 读出来是 `2in1`，所以 `window.multi` 为 ✅，
+「新开一个窗口」的入口才渲染出来 —— 能力探测先于调用，是设计结果而不是降级事故）。
 
 ArkUI 那套页面能在截图里直接读到实测的事件序列：
 
@@ -348,11 +348,11 @@ ArkUI 那套页面能在截图里直接读到实测的事件序列：
 core 用 `capabilities.has('x')` 分支，**不写** `if (platform === 'electron')` ——
 后者会让第三端变成一串 `else`。`Platform` 只用于日志诊断。
 
-| 能力 | Electron | Web | 鸿蒙（phone） | 没有时的 UI 行为 |
+| 能力 | Electron | Web | 鸿蒙 PC（2in1） | 没有时的 UI 行为 |
 |---|---|---|---|---|
 | `fs.scope` | ✅ | ✅（OPFS；没有 `navigator.storage.getDirectory` 就没有） | ✅ | 没有就不渲染文件树 |
 | `notify.system` | ✅ | ✅（`typeof Notification !== 'undefined'` 才有） | ✅ | 没有就不渲染通知开关 |
-| `window.multi` | ✅ | ❌ | ❌（`deviceType = phone`；`2in1` / `tablet` 才有） | 多窗口那块显示 `—` |
+| `window.multi` | ✅ | ❌ | ✅（`deviceType = 2in1` 才有；phone / tablet 形态会如实缺席） | 多窗口那块显示 `—` |
 | `shortcut.global` | ✅ | ❌ | ❌ | 不渲染快捷键提示 |
 | `tray` | ✅ | ❌ | ❌ | 不渲染托盘入口 |
 | `update.auto` | ✅ | ❌ | ❌ | 不渲染更新入口 |
@@ -403,7 +403,7 @@ Electron 那份仍在主进程内（它要跟着 main 一起打包），是**约
 ┌──────────────────────────────────────────────────────────┐
 │  Shell 层 · 平台相关 · 每端一份                           │
 │  ┌───────────┐  ┌───────────────┐  ┌──────────────────┐  │
-│  │  Web 壳   │  │ Electron 壳   │  │ HarmonyOS 壳     │  │
+│  │  Web 壳   │  │ Electron 壳   │  │ 鸿蒙 PC 壳       │  │
 │  │  降级实现 │  │  完整实现     │  │ ArkTS 实现       │  │
 │  └─────┬─────┘  └───────┬───────┘  └────────┬─────────┘  │
 └────────┼────────────────┼───────────────────┼────────────┘
@@ -551,41 +551,6 @@ docs/evidence/               # 自检报告与截图（可核验产物）
 在 core 里修好的 bug，鸿蒙壳会继续跑旧版本。
 代价是：**clone 之后第一次用 DevEco 打开工程前，先跑一次 `pnpm sync:ohos`**，
 否则 IDE 会对那些 import 报找不到模块（`pnpm verify:ohos` 会自动带上这一步）。
-
----
-
-## 平台能力对照
-
-这张表不是设想：**三列都是运行时探测的输出**。Web 列来自
-`docs/evidence/web-selfcheck.json` 的 `detectedCapabilities`，
-Electron 列来自自检报告的 `systemInfo.capabilities`，鸿蒙列来自模拟器上的实测
-（ArkUI 兜底页 `docs/screenshots/ohos-shell.jpg` 的 ① 节；`detectCapabilities()`
-在 P3 里没有改动，所以那次的探测结论仍然适用）。
-
-| 能力 | Web 壳 | Electron 壳 | HarmonyOS 壳（phone 形态实测） |
-|---|---|---|---|
-| `fs.scope` 文件读写 | ✅ OPFS / File System Access API | ✅ `node:fs` + scope 授权 | ✅ `@ohos.file.fs`（沙箱工作区；用户目录选择器未接） |
-| `notify.system` 系统通知 | ⚠️ 有，但先要用户授权 | ✅ `new Notification()` | ⚠️ `@ohos.notificationManager`：设备有，端口未实现 |
-| `window.multi` 多窗口 | ❌ 只有页面内面板 | ✅ `BrowserWindow` 多实例 | ❌ 探到 `phone`；`2in1` / `tablet` 才报 ✅ |
-| `shortcut.global` 全局快捷键 | ❌ 网页不允许注册 | ✅ `globalShortcut` | ❌ 鸿蒙没有桌面级全局快捷键 |
-| `update.auto` 自动更新 | ❌ 刷新即最新 | ✅ `electron-updater` | ❌ 更新走应用市场，非应用内自更新 |
-| `tray` 托盘 | ❌ 不存在 | ✅ `Tray` | ❌ 没有系统托盘概念 |
-
-鸿蒙列里只有 `window.multi` 是**真探测**（按 `deviceInfo.deviceType` 判）；
-其余是设备侧的**无条件声明**，没做可用性检查。而且"设备提供"≠"壳已实现"：
-`fs.scope` 的端口已经落地（真 `@ohos.file.fs`），`notify.system` 还没有。
-这里如实标出来，而不是让表格看起来比实现更成熟。
-
-三条硬事实：
-
-1. **不装假实现。** 一个把能力表填满的 Web 壳看起来更"完整"，但 UI 会据此渲染出
-   永远点不动的按钮 —— 假实现比没有实现更糟。
-2. **能力探测先于调用**，不是先调用再兜底。UI 少渲染一块，是设计结果而不是降级事故。
-3. **差异文档化，不做"假装统一的抽象"。** `window.multi` 在 Web 壳里返回面板 id 而不是抛错，
-   但 `has('window.multi')` 是 `false` —— 调用方本来就该先探测再决定要不要显示"新建窗口"。
-
-这张表本身就是一个结论：**一套 core 不是所有端都能 100% 复用**。
-边界在哪里、怎么降级，才是架构判断力的体现。
 
 ---
 
